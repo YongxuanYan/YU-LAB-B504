@@ -16,7 +16,7 @@
 </div>
 
 <p align="center">
-English | <a href="README_zh.md">简体中文</a>
+Welcome
 </p>
 
 ![Interface](https://github.com/YongxuanYan/YU-LAB-B504/blob/main/docs/sources/github_cover.png)
