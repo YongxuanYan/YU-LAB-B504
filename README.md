@@ -31,32 +31,16 @@ To start, run YU-LAB-B504/gallery/start.py:
 ```shell
 python gallery/start.py
 ```
-Or install built .exe version, [download](https://github.com/zhiyiYo/PyQt-Fluent-Widgets/releases):
-```shell
-pip install "PyQt-Fluent-Widgets[full]" -i https://pypi.org/simple/
-```
-
-If you are using PySide2, PySide6 or PyQt6, you can download the code in [PySide2](https://github.com/zhiyiYo/PyQt-Fluent-Widgets/tree/PySide2), [PySide6](https://github.com/zhiyiYo/PyQt-Fluent-Widgets/tree/PySide6) or [PyQt6](https://github.com/zhiyiYo/PyQt-Fluent-Widgets/tree/PyQt6) branch.
-
-The [Pro version](https://qfluentwidgets.com/pages/pro) library contains more advance components. You can download `PyQt-Fluent-Widgets-Pro-Gallery.zip` from the [release page](https://github.com/zhiyiYo/PyQt-Fluent-Widgets/releases) for preview purposes.
-
-C++ QFluentWidgets require purchasing a license from the [official website](https://qfluentwidgets.com/price). You can also download the compiled demo `C++_QFluentWidgets.zip` from the [release page](https://github.com/zhiyiYo/PyQt-Fluent-Widgets/releases).
+Or install compiled .exe version, [download](https://github.com/zhiyiYo/PyQt-Fluent-Widgets/releases):
 
 > [!Warning]
-> Don't install PyQt-Fluent-Widgets, PyQt6-Fluent-Widgets, PySide2-Fluent-Widgets and PySide6-Fluent-Widgets at the same time, because their package names are all `qfluentwidgets`.
-
-
-## Run Example
-After installing PyQt-Fluent-Widgets package using pip, you can run any demo in the examples directory, for example:
-```python
-cd examples/gallery
-python demo.py
+> If you use Python IDE like pycharm to terminate the program, the temporary files will not be deleted (by clicking the program's exit button it can be deleted), so please delete the default temporary files regularly:
+```shell
+C:\Users\your_ID\AppData\Local\Temp
 ```
 
-If you encounter `ImportError: cannot import name 'XXX' from 'qfluentwidgets'`, it indicates that the package version you installed is too low. You can replace the mirror source with https://pypi.org/simple and reinstall again.
-
 ## Documentation
-Want to know more about PyQt-Fluent-Widgets? Please read the [help document](https://qfluentwidgets.com) 👈
+Want to know more about YU-LAB-B504? Please read the [help document]((https://docs.google.com/document/d/1dT0OrGZrLSuN7N5hW12Fhke2cdFEohUO-YOWfEBuKSw/export?format=pdf).
 
 
 ## License
@@ -65,24 +49,21 @@ Copyright © 2025 by YongxuanYan.
 
 
 ## Video Demonstration
-Check out this [▶ example video](https://www.bilibili.com/video/BV12c411L73q) that shows off what PyQt-Fluent-Widgets are capable of 🎉
+Check out this [▶ example video]() that shows what YU-LAB-B504 are capable of.
 
-## Work with Designer
-[Fluent Client](https://www.youtube.com/watch?v=7UCmcsOlhTk) integrates designer plugins, supporting direct drag-and-drop usage of QFluentWidgets components in Designer. You can purchase the client from [TaoBao](https://item.taobao.com/item.htm?ft=t&id=767961666600).
-
-![Fluent Designer](https://img.fastmirror.net/s/2024/02/18/65d22363d4a73.jpg)
-
-
-## See Also
-Here are some projects based on PyQt-Fluent-Widgets:
-* [**zhiyiYo/QMaterialWidgets**: A material design widgets library based on PyQt/PySide](https://qmaterialwidgets.vercel.app)
-* [**zhiyiYo/Groove**: A cross-platform music player based on PyQt5](https://github.com/zhiyiYo/Groove)
-* [**zhiyiYo/Alpha-Gobang-Zero**: A gobang robot based on reinforcement learning](https://github.com/zhiyiYo/Alpha-Gobang-Zero)
-
-## Reference
-* [**Windows design**: Design guidelines and toolkits for creating native app experiences](https://learn.microsoft.com/zh-cn/windows/apps/design/)
-* [**Microsoft/WinUI-Gallery**: An app demonstrates the controls available in WinUI and the Fluent Design System](https://github.com/microsoft/WinUI-Gallery)
-
+## Contact us
+YongxuanYan
+```shell
+d002wcu@yamaguchi-u.ac.jp
+```
+Fumitake Fujii
+```shell
+ffujii@yamaguchi-u.ac.jp
+```
+Takehiro Shiinoki
+```shell
+shiinoki@yamaguchi-u.ac.jp
+```
 ## Thanks
 This work was supported by JST SPRING, Grant Number JPMJSP2111.
 
