@@ -2,18 +2,16 @@
   <img width="18%" align="center" src="https://raw.githubusercontent.com/zhiyiYo/PyQt-Fluent-Widgets/master/docs/source/_static/logo.png" alt="logo">
 </p>
   <h1 align="center">
-  PyQt-Fluent-Widgets
+  YU LAB-B504
 </h1>
 <p align="center">
-  A fluent design widgets library based on PyQt5
+  Official github for YU LAB-B504
 </p>
 
 <div align="center">
 
-[![Version](https://img.shields.io/pypi/v/pyqt-fluent-widgets?color=%2334D058&label=Version)](https://pypi.org/project/PyQt-Fluent-Widgets)
-[![Download](https://static.pepy.tech/personalized-badge/pyqt-fluent-widgets?period=total&units=international_system&left_color=grey&right_color=brightgreen&left_text=Downloads)]()
 [![GPLv3](https://img.shields.io/badge/License-GPLv3-blue?color=#4ec820)](LICENSE)
-[![Platform Win32 | Linux | macOS](https://img.shields.io/badge/Platform-Win32%20|%20Linux%20|%20macOS-blue?color=#4ec820)]()
+[![Platform Win32 | Linux | macOS]]()
 
 </div>
 
