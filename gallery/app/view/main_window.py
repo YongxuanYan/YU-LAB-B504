@@ -27,7 +27,7 @@ class MainWindow(FluentWindow):
         super().__init__()
         # global_vars.json 用于存储全局变量，如CT数据，LBCT数据等
         initialize_global_vars()
-        self.settings = QSettings("YU LAB-B504", "MainWindowSizePosition")  # 设置组和应用名称
+        self.settings = QSettings("YU-LAB-B504", "MainWindowSizePosition")  # 设置组和应用名称
         self.initWindow()
         # create system theme listener
         self.themeListener = SystemThemeListener(self)
@@ -66,7 +66,7 @@ class MainWindow(FluentWindow):
     def initWindow(self):
         self.load_window_settings()
         self.setWindowIcon(QIcon(':/gallery/images/logo.png'))
-        self.setWindowTitle('YU LAB-B504')
+        self.setWindowTitle('YU-LAB-B504')
         self.setMicaEffectEnabled(cfg.get(cfg.micaEnabled))
         # create splash screen
         self.splashScreen = SplashScreen(self.windowIcon(), self)
