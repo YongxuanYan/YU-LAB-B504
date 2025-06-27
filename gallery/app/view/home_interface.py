@@ -20,7 +20,7 @@ class BannerWidget(QWidget):
         self.setFixedHeight(336)
 
         self.vBoxLayout = QVBoxLayout(self)
-        self.galleryLabel = QLabel('YU LAB-B504', self)
+        self.galleryLabel = QLabel('YU-LAB-B504', self)
         self.banner = QPixmap(':/gallery/images/Lab.png')
         self.linkCardView = LinkCardView(self)
 
