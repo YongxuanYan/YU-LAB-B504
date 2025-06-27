@@ -40,7 +40,7 @@ C:\Users\your_ID\AppData\Local\Temp
 ```
 
 ## Documentation
-Want to know more about YU-LAB-B504? Please read the [help document]((https://docs.google.com/document/d/1dT0OrGZrLSuN7N5hW12Fhke2cdFEohUO-YOWfEBuKSw/export?format=pdf).
+Want to know more about YU-LAB-B504? Please read the [help document](https://docs.google.com/document/d/1dT0OrGZrLSuN7N5hW12Fhke2cdFEohUO-YOWfEBuKSw/export?format=pdf).
 
 
 ## License
