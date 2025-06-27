@@ -56,11 +56,11 @@ YongxuanYan
 ```shell
 d002wcu@yamaguchi-u.ac.jp
 ```
-Fumitake Fujii
+Prof.Fumitake Fujii
 ```shell
 ffujii@yamaguchi-u.ac.jp
 ```
-Takehiro Shiinoki
+Dr.Takehiro Shiinoki
 ```shell
 shiinoki@yamaguchi-u.ac.jp
 ```
