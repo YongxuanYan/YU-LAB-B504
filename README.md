@@ -2,10 +2,10 @@
   <img width="18%" align="center" src="https://github.com/YongxuanYan/YU-LAB-B504/blob/main/docs/sources/logo.png" alt="logo">
 </p>
   <h1 align="center">
-  YU LAB-B504
+  YU-LAB-B504
 </h1>
 <p align="center">
-  Official github for YU LAB-B504
+  Official github for YU-LAB-B504
 </p>
 
 <div align="center">
