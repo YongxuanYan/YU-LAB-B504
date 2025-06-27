@@ -10,7 +10,7 @@
 
 <div align="center">
 
-[![GPLv3](https://img.shields.io/badge/License-GPLv3-blue?color=#4ec820)](LICENSE)
+[GPLv3](LICENSE)
 [Platform Winows | Linux | macOS]
 
 </div>
