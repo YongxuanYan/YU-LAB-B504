@@ -49,7 +49,7 @@ Copyright © 2025 by YongxuanYan.
 
 
 ## Video Demonstration
-Check out this [▶ example video]() that shows what YU-LAB-B504 are capable of.
+Check out this [▶ example video]() that shows what YU-LAB-B504 is capable of.
 
 ## Contact us
 YongxuanYan
