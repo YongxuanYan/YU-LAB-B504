@@ -11,7 +11,7 @@
 <div align="center">
 
 [![GPLv3](https://img.shields.io/badge/License-GPLv3-blue?color=#4ec820)](LICENSE)
-[![Platform Win32 | Linux | macOS]]()
+[Platform Winows | Linux | macOS]
 
 </div>
 
