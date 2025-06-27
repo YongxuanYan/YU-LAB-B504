@@ -21,7 +21,11 @@ English | <a href="README_zh.md">简体中文</a>
 
 ![Interface](https://raw.githubusercontent.com/zhiyiYo/PyQt-Fluent-Widgets/master/docs/source/_static/Interface.jpg)
 
-
+## Requirements
+To install all requirements for developing:
+```shell
+pip install -r requirements.txt
+```
 ## Start
 To start, run YU-LAB-B504/gallery/start.py:
 ```shell
@@ -56,9 +60,8 @@ Want to know more about PyQt-Fluent-Widgets? Please read the [help document](htt
 
 
 ## License
-PyQt-Fluent-Widgets is licensed under [GPLv3](./LICENSE) for non-commercial project. For commercial use, please purchase a [commercial license](https://qfluentwidgets.com/price).
-
-Copyright © 2021 by zhiyiYo.
+YU-LAB-B504 is licensed under [GPLv3](./LICENSE) for both commercial and non-commercial projects.
+Copyright © 2025 by YongxuanYan.
 
 
 ## Video Demonstration
