@@ -19,7 +19,7 @@
 English | <a href="README_zh.md">简体中文</a>
 </p>
 
-![Interface](https://raw.githubusercontent.com/zhiyiYo/PyQt-Fluent-Widgets/master/docs/source/_static/Interface.jpg)
+![Interface](https://github.com/YongxuanYan/YU-LAB-B504/blob/main/docs/sources/github_cover.png)
 
 ## Requirements
 To install all requirements for developing:
