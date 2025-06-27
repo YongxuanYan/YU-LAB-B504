@@ -67,5 +67,5 @@ shiinoki@yamaguchi-u.ac.jp
 ## Thanks
 This work was supported by JST SPRING, Grant Number JPMJSP2111.
 
-This software was developed based on frame of [PyQt-Fluent-Widgets](https://github.com/zhiyiYo/PyQt-Fluent-Widgets/tree/master))
+This software was developed based on frame of [PyQt-Fluent-Widgets](https://github.com/zhiyiYo/PyQt-Fluent-Widgets/tree/master)
 
