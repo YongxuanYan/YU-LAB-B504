@@ -1,5 +1,5 @@
 <p align="center">
-  <img width="18%" align="center" src="https://raw.githubusercontent.com/zhiyiYo/PyQt-Fluent-Widgets/master/docs/source/_static/logo.png" alt="logo">
+  <img width="18%" align="center" src="https://github.com/YongxuanYan/YU-LAB-B504/blob/main/docs/sources/logo.png" alt="logo">
 </p>
   <h1 align="center">
   YU LAB-B504
