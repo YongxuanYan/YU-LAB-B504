@@ -16,18 +16,18 @@
 </div>
 
 <p align="center">
-English | <a href="docs/README_zh.md">简体中文</a> | <a href="https://qfluentwidgets.com/">官网</a>
+English | <a href="docs/README_zh.md">简体中文</a>
 </p>
 
 ![Interface](https://raw.githubusercontent.com/zhiyiYo/PyQt-Fluent-Widgets/master/docs/source/_static/Interface.jpg)
 
 
-## Install
-To install lite version (`AcrylicLabel` is not available):
+## Start
+To start, run YU-LAB-B504/gallery/start.py:
 ```shell
-pip install PyQt-Fluent-Widgets -i https://pypi.org/simple/
+python gallery/start.py
 ```
-Or install full-featured version:
+Or install built .exe version, [download](https://github.com/zhiyiYo/PyQt-Fluent-Widgets/releases):
 ```shell
 pip install "PyQt-Fluent-Widgets[full]" -i https://pypi.org/simple/
 ```
@@ -79,3 +79,8 @@ Here are some projects based on PyQt-Fluent-Widgets:
 ## Reference
 * [**Windows design**: Design guidelines and toolkits for creating native app experiences](https://learn.microsoft.com/zh-cn/windows/apps/design/)
 * [**Microsoft/WinUI-Gallery**: An app demonstrates the controls available in WinUI and the Fluent Design System](https://github.com/microsoft/WinUI-Gallery)
+
+## Thanks
+This work was supported by JST SPRING, Grant Number JPMJSP2111.
+This software was developed based on frame of [PyQt-Fluent-Widgets](https://github.com/zhiyiYo/PyQt-Fluent-Widgets/tree/master))
+
