@@ -16,7 +16,7 @@
 </div>
 
 <p align="center">
-English | <a href="docs/README_zh.md">简体中文</a>
+English | <a href="README_zh.md">简体中文</a>
 </p>
 
 ![Interface](https://raw.githubusercontent.com/zhiyiYo/PyQt-Fluent-Widgets/master/docs/source/_static/Interface.jpg)
@@ -82,5 +82,6 @@ Here are some projects based on PyQt-Fluent-Widgets:
 
 ## Thanks
 This work was supported by JST SPRING, Grant Number JPMJSP2111.
+
 This software was developed based on frame of [PyQt-Fluent-Widgets](https://github.com/zhiyiYo/PyQt-Fluent-Widgets/tree/master))
 
