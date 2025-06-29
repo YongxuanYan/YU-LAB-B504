@@ -52,17 +52,10 @@ Copyright © 2025 by YongxuanYan.
 Check out this [▶ example video](https://youtu.be/Sz7lYDTaKRQ) that shows what YU-LAB-B504 is capable of.
 
 ## Contact us
-YongxuanYan
+YongxuanYan or Prof.Fumitake Fujii
 ```shell
 d002wcu@yamaguchi-u.ac.jp
-```
-Prof.Fumitake Fujii
-```shell
 ffujii@yamaguchi-u.ac.jp
-```
-Dr.Takehiro Shiinoki
-```shell
-shiinoki@yamaguchi-u.ac.jp
 ```
 ## Thanks
 This work was supported by JST SPRING, Grant Number JPMJSP2111.
