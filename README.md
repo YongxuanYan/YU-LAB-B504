@@ -34,7 +34,7 @@ python gallery/start.py
 Or install compiled .exe version, [download](https://github.com/zhiyiYo/PyQt-Fluent-Widgets/releases):
 
 > [!Warning]
-> If you use Python IDE like pycharm to terminate the program, the temporary files will not be deleted (by clicking the program's exit button it can be deleted), so please delete the default temporary files regularly:
+> If you use Python IDE like pycharm to terminate the program, the temporary files will not be deleted (by clicking the program's exit button it will be automatically deleted), so please delete the default temporary files regularly:
 ```shell
 C:\Users\your_ID\AppData\Local\Temp
 ```
