@@ -31,7 +31,7 @@ To start, run YU-LAB-B504/gallery/start.py:
 ```shell
 python gallery/start.py
 ```
-Or install compiled .exe version, [download](https://github.com/zhiyiYo/PyQt-Fluent-Widgets/releases):
+Or install compiled .exe version, [download]():
 
 > [!Warning]
 > If you use Python IDE like pycharm to terminate the program, the temporary files will not be deleted (by clicking the program's exit button it will be automatically deleted), so please delete the default temporary files regularly:
