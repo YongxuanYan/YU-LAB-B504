@@ -52,7 +52,7 @@ Copyright © 2025 by YongxuanYan.
 Check out this [▶ example video](https://youtu.be/Sz7lYDTaKRQ) that shows what YU-LAB-B504 is capable of.
 
 ## Contact us
-YongxuanYan
+Yongxuan Yan
 ```shell
 d002wcu@yamaguchi-u.ac.jp
 ```
