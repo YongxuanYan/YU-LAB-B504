@@ -41,12 +41,11 @@ class SeparatorWidget(QWidget):
 class DRRGenerationThread(QThread):
     progress_signal = pyqtSignal(str)  # 用于发送进度消息到主线程
 
-    def __init__(self, E0, muWater, muAir, pair, Geoinfo_save_path, resolution, tileSize, couchAngle, iso_x, iso_y, iso_z, sliceThickness, DRR_type, bitDepth, parent=None):
+    def __init__(self, muWater, muAir, pair, Geoinfo_save_path, resolution, tileSize, couchAngle, iso_x, iso_y, iso_z, sliceThickness, DRR_type, bitDepth, parent=None):
         super().__init__(parent)
         self.muWater = muWater
         self.muAir = muAir
         self.pair = pair
-        self.E0 = E0
         self.Geoinfo_save_path = Geoinfo_save_path
         self.resolution = resolution
         self.tileSize = tileSize
@@ -62,7 +61,7 @@ class DRRGenerationThread(QThread):
     def run(self):
         try:
             if self.pair == 'imaging pair 1':
-                completed, DRR, Label = self.parent.imaging_pair1_DRR_generation(self.E0, self.muWater, self.muAir,
+                completed, DRR, Label = self.parent.imaging_pair1_DRR_generation(self.muWater, self.muAir,
                     self.Geoinfo_save_path, self.resolution, self.bitDepth, self.tileSize, self.couchAngle,
                     self.iso_x, self.iso_y, self.iso_z, self.sliceThickness, self.DRR_type)
                 msg = f"DRR generation for imaging pair 1 completed! Automatically saved at {self.Geoinfo_save_path}\saved DRR" if completed else "Failed to generate DRR for imaging pair 1."
@@ -75,7 +74,7 @@ class DRRGenerationThread(QThread):
                     set_var("DRREXISTS_Left", 1)
                 self.progress_signal.emit(msg)
             elif self.pair == 'imaging pair 2':
-                completed, DRR, Label = self.parent.imaging_pair2_DRR_generation(self.E0, self.muWater, self.muAir,
+                completed, DRR, Label = self.parent.imaging_pair2_DRR_generation(self.muWater, self.muAir,
                     self.Geoinfo_save_path, self.resolution, self.bitDepth, self.tileSize, self.couchAngle,
                     self.iso_x, self.iso_y, self.iso_z, self.sliceThickness, self.DRR_type)
                 msg = f"DRR generation for imaging pair 2 completed! Automatically saved at {self.Geoinfo_save_path}\saved DRR" if completed else "Failed to generate DRR for imaging pair 2."
@@ -88,7 +87,7 @@ class DRRGenerationThread(QThread):
                     set_var("DRREXISTS_Right", 1)
                 self.progress_signal.emit(msg)
             elif self.pair == 'both imaging pairs':
-                completed1, DRR1, Label1 = self.parent.imaging_pair1_DRR_generation(self.E0, self.muWater, self.muAir,
+                completed1, DRR1, Label1 = self.parent.imaging_pair1_DRR_generation(self.muWater, self.muAir,
                     self.Geoinfo_save_path, self.resolution, self.bitDepth, self.tileSize, self.couchAngle,
                     self.iso_x, self.iso_y, self.iso_z, self.sliceThickness, self.DRR_type)
                 if completed1:
@@ -98,7 +97,7 @@ class DRRGenerationThread(QThread):
                     TempDRR[:, :, 2] = cv2.resize(0.85 * DRR1 + 0.15 * np.multiply(DRR1, Label1), (512, 512))
                     set_var("Left_DRR", TempDRR)
                     set_var("DRREXISTS_Left", 1)
-                completed2, DRR2, Label2 = self.parent.imaging_pair2_DRR_generation(self.E0, self.muWater, self.muAir,
+                completed2, DRR2, Label2 = self.parent.imaging_pair2_DRR_generation(self.muWater, self.muAir,
                     self.Geoinfo_save_path, self.resolution, self.bitDepth, self.tileSize, self.couchAngle,
                     self.iso_x, self.iso_y, self.iso_z, self.sliceThickness, self.DRR_type)
                 if completed2:
@@ -132,17 +131,41 @@ class ToolBar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent=parent)
 
-        self.NoMoreAskingCheckBox = CheckBox('no more asking before generating DRR.', self)
+        self.NoMoreAskingCheckBox = CheckBox('no more asking before generation', self)
         self.NoMoreAskingCheckBox.setFixedHeight(28)
         self.NoMoreAskingCheckBox.stateChanged.connect(
             lambda: set_var("NoMoreAsking", self.NoMoreAskingCheckBox.isChecked()))
 
-        self.EnableMuEdittingCheckBox = CheckBox('enable μ edit.', self)
+        self.EnableMuEdittingCheckBox = CheckBox('enable μ edit', self)
         self.EnableMuEdittingCheckBox.setFixedHeight(28)
         self.EnableMuEdittingCheckBox.stateChanged.connect(self.toggle_editing)
 
-        self.LabelGenCheckBox = CheckBox('generate tumor label.', self)
+        self.LabelGenCheckBox = CheckBox('generate tumor label', self)
         self.LabelGenCheckBox.setFixedHeight(28)
+
+        self.BatchGenCheckBox = CheckBox('batch generation', self)
+        self.BatchGenCheckBox.setFixedHeight(28)
+
+        self.from_label = BodyLabel(self.tr('couch angle from'), self)
+        self.from_LineEdit = LineEdit(self)
+        self.from_LineEdit.setFixedSize(60, 28)
+        self.from_LineEdit.setText('0')
+        self.from_LineEdit.setToolTip('please inpuit start couch angle')
+        self.from_LineEdit.setValidator(QIntValidator(0, 360, self))
+        self.to_label = BodyLabel(self.tr('to'), self)
+        self.to_LineEdit = LineEdit(self)
+        self.to_LineEdit.setFixedSize(60, 28)
+        self.to_LineEdit.setText('0')
+        self.to_LineEdit.setToolTip('please inpuit end couch angle')
+        self.to_LineEdit.setValidator(QIntValidator(0, 360, self))
+        self.for_every_label = BodyLabel(self.tr('for every'), self)
+        self.every_LineEdit = LineEdit(self)
+        self.every_LineEdit.setFixedSize(60, 28)
+        self.every_LineEdit.setText('0')
+        self.every_LineEdit.setToolTip('please inpuit couch angle interval')
+        self.every_LineEdit.setValidator(QIntValidator(0, 360, self))
+        self.degree_label = BodyLabel(self.tr('degrees'), self)
+
 
         self.themeButton = ToolButton(FluentIcon.CONSTRACT, self)
         self.generateDRRButton = PushButton(self.tr('generate DRR'), self, Icon.DRR)
@@ -155,7 +178,7 @@ class ToolBar(QWidget):
         self.initial_I_LineEdit.setFixedSize(60, 28)
         self.initial_I_LineEdit.setToolTip('X-ray condition, 1~20000.')
         self.initial_I_LineEdit.setValidator(QIntValidator(1, 20000, self))
-        self.initial_I_LineEdit.setText('60')
+        self.initial_I_LineEdit.setText('30')
         self.initial_I_LineEdit.textChanged.connect(self.update_mu_values)
 
         self.mu_water_label = BodyLabel(self.tr('μ<sub>water<sub>'), self)
@@ -163,7 +186,7 @@ class ToolBar(QWidget):
         self.mu_water_LineEdit.setFixedSize(80, 28)
         self.mu_water_LineEdit.setToolTip('mass attenuation coefficient for water')
         self.mu_water_LineEdit.setValidator(QDoubleValidator(0, 1, 5))
-        self.mu_water_LineEdit.setText('0.20590')
+        self.mu_water_LineEdit.setText('0.37560')
         self.mu_water_LineEdit.setReadOnly(True)
 
         self.mu_air_label = BodyLabel(self.tr('μ<sub>air<sub>'), self)
@@ -171,21 +194,21 @@ class ToolBar(QWidget):
         self.mu_air_LineEdit.setFixedSize(80, 28)
         self.mu_air_LineEdit.setToolTip('mass attenuation coefficient for air')
         self.mu_air_LineEdit.setValidator(QDoubleValidator(0, 1, 5))
-        self.mu_air_LineEdit.setText('0.00024')
+        self.mu_air_LineEdit.setText('0.00046')
         self.mu_air_LineEdit.setReadOnly(True)
 
         self.tile_size_label = BodyLabel(self.tr('tile size'), self)
         self.tile_size_label.setToolTip('please use a small tile size to reduce memory usage.')
         self.tile_size_LineEdit = LineEdit(self)
         self.tile_size_LineEdit.setFixedSize(60, 28)
-        self.tile_size_LineEdit.setText('16')
+        self.tile_size_LineEdit.setText('256')
         self.tile_size_LineEdit.setToolTip('please make sure the tile size is divisible by the resolution.')
         self.tile_size_LineEdit.setValidator(QIntValidator(1, 9999, self))
 
         self.drr_resolution_label = BodyLabel(self.tr('DRR resolution: '), self)
         self.drr_resolution_LineEdit = LineEdit(self)
         self.drr_resolution_LineEdit.setFixedSize(60, 28)
-        self.drr_resolution_LineEdit.setText('128')
+        self.drr_resolution_LineEdit.setText('256')
         self.drr_resolution_LineEdit.setToolTip('please input 512 for resolution: 512*512')
         self.drr_resolution_LineEdit.setValidator(QIntValidator(1, 9999, self))
 
@@ -224,7 +247,7 @@ class ToolBar(QWidget):
         self.tumor_label_threshold_LineEdit = LineEdit(self)
         self.tumor_label_threshold_LineEdit.setFixedSize(60, 28)
         self.tumor_label_threshold_LineEdit.setToolTip('threshold projection, see this paper for more details: Markerless Lung Tumor Localization From Intraoperative Stereo Color Fluoroscopic Images for Radiotherapy')
-        self.tumor_label_threshold_LineEdit.setText('10')
+        self.tumor_label_threshold_LineEdit.setText('8')
         self.tumor_label_threshold_LineEdit.setValidator(QIntValidator(0, 999))
 
         self.bone_suppress_method_label = BodyLabel(self.tr('bone suppress method: '), self)
@@ -270,6 +293,7 @@ class ToolBar(QWidget):
         self.DRR_type_comboBox.currentTextChanged.connect(self.update_control_visibility)
         self.bone_suppress_method_combobox.currentTextChanged.connect(self.update_control_visibility)
         self.LabelGenCheckBox.stateChanged.connect(self.update_control_visibility)
+        self.BatchGenCheckBox.stateChanged.connect(self.update_control_visibility)
 
     def __initWidget(self):
         # Button layout
@@ -285,6 +309,14 @@ class ToolBar(QWidget):
         self.buttonLayout.addWidget(self.EnableMuEdittingCheckBox)
         self.buttonLayout.addWidget(self.LabelGenCheckBox)
         self.LabelGenCheckBox.setChecked(True)
+        self.buttonLayout.addWidget(self.BatchGenCheckBox)
+        self.buttonLayout.addWidget(self.from_label)
+        self.buttonLayout.addWidget(self.from_LineEdit)
+        self.buttonLayout.addWidget(self.to_label)
+        self.buttonLayout.addWidget(self.to_LineEdit)
+        self.buttonLayout.addWidget(self.for_every_label)
+        self.buttonLayout.addWidget(self.every_LineEdit)
+        self.buttonLayout.addWidget(self.degree_label)
         self.themeButton.installEventFilter(ToolTipFilter(self.themeButton))
         self.themeButton.setToolTip(self.tr('toggle theme'))
         self.themeButton.clicked.connect(lambda: toggleTheme(True, False))
@@ -368,6 +400,13 @@ class ToolBar(QWidget):
         self.bone_enhance_factor_LineEdit.setVisible(False)
         self.deltaI_label.setVisible(False)
         self.deltaI_LineEdit.setVisible(False)
+        self.from_label.setVisible(False)
+        self.from_LineEdit.setVisible(False)
+        self.to_label.setVisible(False)
+        self.to_LineEdit.setVisible(False)
+        self.for_every_label.setVisible(False)
+        self.every_LineEdit.setVisible(False)
+        self.degree_label.setVisible(False)
 
         # 根据 DRR 类型显示相应的控件
         if drr_type == 'normal DRR':
@@ -402,6 +441,15 @@ class ToolBar(QWidget):
             self.tumor_label_threshold_label.setVisible(True)
             self.tumor_label_threshold_LineEdit.setVisible(True)
 
+        if self.BatchGenCheckBox.isChecked():
+            self.from_label.setVisible(True)
+            self.from_LineEdit.setVisible(True)
+            self.to_label.setVisible(True)
+            self.to_LineEdit.setVisible(True)
+            self.for_every_label.setVisible(True)
+            self.every_LineEdit.setVisible(True)
+            self.degree_label.setVisible(True)
+
     def showConfirmationDialog(self, sliceThickness, resolution, tileSize, couchAngle, imaging_pair, iso_x, iso_y,
                                iso_z):
         """
@@ -432,7 +480,7 @@ class ToolBar(QWidget):
             return
         E0 = check_is_number(self.initial_I_LineEdit, 1)
         if E0 is None:
-            self.sys_msg("Invalid I<sub>0<sub>.")
+            self.sys_msg("Invalid KeV.")
             return
         bitDepth = check_is_number(self.drr_bitDepth_LineEdit, 1)
         if bitDepth is None:
@@ -450,8 +498,8 @@ class ToolBar(QWidget):
         if resolution is None:
             self.sys_msg("Invalid DRR resolution.")
             return
-        if resolution < 1 or resolution > 2000:
-            self.sys_msg("DRR resolution should be between 1-2000.")
+        if resolution < 1 or resolution > 9999:
+            self.sys_msg("DRR resolution should be between 1-9999.")
             return
         tileSize = check_is_number(self.tile_size_LineEdit, 1)
         if tileSize is None:
@@ -463,10 +511,25 @@ class ToolBar(QWidget):
         if resolution % tileSize != 0:
             self.sys_msg("Please make sure DRR resolution is divisible by the tile size.")
             return
-        couchAngle = check_is_number(self.couch_angle_LineEdit, 0)
-        if couchAngle is None:
-            self.sys_msg("Invalid couch angle.")
-            return
+        if self.BatchGenCheckBox.isChecked():
+            startAngle = check_is_number(self.from_LineEdit, 0)
+            if startAngle is None:
+                self.sys_msg("Invalid start couch angle.")
+                return
+            endAngle = check_is_number(self.to_LineEdit, 0)
+            if endAngle is None or endAngle < startAngle:
+                self.sys_msg("Invalid end couch angle.")
+                return
+            intervalAngle = check_is_number(self.every_LineEdit, 0)
+            if intervalAngle is None or intervalAngle == 0 or intervalAngle > endAngle - startAngle:
+                self.sys_msg("Invalid couch angle interval.")
+                return
+            couchAngle = np.arange(startAngle, endAngle + intervalAngle, intervalAngle)
+        else:
+            couchAngle = check_is_number(self.couch_angle_LineEdit, 0)
+            if couchAngle is None:
+                self.sys_msg("Invalid couch angle.")
+                return
         imaging_pair = self.imaging_pair_selection_comboBox.currentText()
 
         # 判断成像对的几何信息已被正确录入
@@ -506,10 +569,10 @@ class ToolBar(QWidget):
 
         # 启动多线程
         buttonClickWithFloatingWindow(self, 'Generating DRR', 'It may take few minutes', 'generate DRR', 1, self.generateDRRButton)
-        """
+        '''
         try:
             if imaging_pair == 'imaging pair 1':
-                completed, DRR = self.imaging_pair1_DRR_generation(I0, muWater, muAir, Geoinfo_save_path, resolution, bitDepth, tileSize,
+                completed, DRR = self.imaging_pair1_DRR_generation(muWater, muAir, Geoinfo_save_path, resolution, bitDepth, tileSize,
                                      couchAngle, iso_x, iso_y, iso_z, sliceThickness, DRR_type)
                 msg = f"DRR generation for imaging pair 1 completed! Automatically saved at {Geoinfo_save_path}\saved DRR" if completed else "Failed to generate DRR for imaging pair 1."
                 if completed:
@@ -518,7 +581,7 @@ class ToolBar(QWidget):
                     set_var("Left_DRR", TempDRR)
                     set_var("DRREXISTS_Left", 1)
             elif imaging_pair == 'imaging pair 2':
-                completed, DRR = self.imaging_pair2_DRR_generation(I0, muWater, muAir, Geoinfo_save_path, resolution, bitDepth, tileSize,
+                completed, DRR = self.imaging_pair2_DRR_generation(muWater, muAir, Geoinfo_save_path, resolution, bitDepth, tileSize,
                                      couchAngle, iso_x, iso_y, iso_z, sliceThickness, DRR_type)
                 msg = f"DRR generation for imaging pair 2 completed! Automatically saved at {Geoinfo_save_path}\saved DRR" if completed else "Failed to generate DRR for imaging pair 2."
                 if completed:
@@ -527,14 +590,14 @@ class ToolBar(QWidget):
                     set_var("Right_DRR", TempDRR)
                     set_var("DRREXISTS_Right", 1)
             elif imaging_pair == 'both imaging pairs':
-                completed1, DRR1 = self.imaging_pair1_DRR_generation(I0, muWater, muAir, Geoinfo_save_path, resolution, bitDepth, tileSize,
+                completed1, DRR1 = self.imaging_pair1_DRR_generation(muWater, muAir, Geoinfo_save_path, resolution, bitDepth, tileSize,
                                      couchAngle, iso_x, iso_y, iso_z, sliceThickness, DRR_type)
                 if completed1:
                     TempDRR = np.zeros((512, 512, 3))
                     TempDRR[:, :, 0] = cv2.resize(DRR1, (512, 512))
                     set_var("Left_DRR", TempDRR)
                     set_var("DRREXISTS_Left", 1)
-                completed2, DRR2 = self.imaging_pair2_DRR_generation(I0, muWater, muAir, Geoinfo_save_path, resolution, bitDepth, tileSize,
+                completed2, DRR2 = self.imaging_pair2_DRR_generation(muWater, muAir, Geoinfo_save_path, resolution, bitDepth, tileSize,
                                      couchAngle, iso_x, iso_y, iso_z, sliceThickness, DRR_type)
                 if completed2:
                     TempDRR = np.zeros((512, 512, 3))
@@ -547,8 +610,8 @@ class ToolBar(QWidget):
         except Exception as e:
             msg = f"Error during DRR generation: {str(e)}"
         self.sys_msg(msg)
-        """
-        self.drr_thread = DRRGenerationThread(E0, muWater, muAir,
+        '''
+        self.drr_thread = DRRGenerationThread(muWater, muAir,
             imaging_pair, Geoinfo_save_path, resolution, tileSize, couchAngle,
             iso_x, iso_y, iso_z, sliceThickness, DRR_type, bitDepth, parent=self
         )
@@ -565,7 +628,7 @@ class ToolBar(QWidget):
         update_display_drr(self.parent())
         self.generateDRRButton.setVisible(True)
 
-    def imaging_pair1_DRR_generation(self, E0, muWater, muAir, Geoinfo_save_path, resolution, bitDepth, tileSize,
+    def imaging_pair1_DRR_generation(self, muWater, muAir, Geoinfo_save_path, resolution, bitDepth, tileSize,
                                      couchAngle, iso_x, iso_y, iso_z, sliceThickness, DRR_type):
         c = False
         labelexits = get_var('labelexits')
@@ -656,7 +719,7 @@ class ToolBar(QWidget):
                                                   muAir, bitDepth, deltaI, interpolated_data)
     '''
 
-    def imaging_pair2_DRR_generation(self, E0, muWater, muAir, Geoinfo_save_path, resolution, bitDepth, tileSize,
+    def imaging_pair2_DRR_generation(self, muWater, muAir, Geoinfo_save_path, resolution, bitDepth, tileSize,
                                      couchAngle, iso_x, iso_y, iso_z, sliceThickness, DRR_type):
         c = False
         labelexits = get_var('labelexits')
