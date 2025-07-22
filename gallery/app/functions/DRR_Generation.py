@@ -9,37 +9,7 @@ from mpl_toolkits.mplot3d import Axes3D
 import cv2
 # from ..functions.coordinate_functions import calculate_rotation_matrix_deltaD
 from .coordinate_functions import calculate_rotation_matrix_deltaD
-
-
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
-
-
-def compute_R(mu_water_E1, mu_water_E2, mu_air_E1, mu_air_E2, a=0.6, b=0.00001):
-    """
-    计算骨骼在高低能量条件下的衰减比值 R
-    参数:
-    a: float, 水的贡献因子 (默认 0.6)
-    b: float, 空气的贡献因子 (默认 0.4)
-    返回:
-    R: float, 骨骼的衰减比值
-    """
-    # 计算骨骼的衰减
-    mu_bone_E1 = a * mu_water_E1 + b * mu_air_E1
-    mu_bone_E2 = a * mu_water_E2 + b * mu_air_E2
-    # 计算 R
-    R = mu_bone_E1 / mu_bone_E2
-    return R
-
-
-def suppress_bones(drr1, drr2, mu_water, mu_water2, mu_air, mu_air2, deltaI):
-    R = compute_R(mu_water, mu_water2, mu_air, mu_air2)
-    #判断哪个是更高的能量
-    if deltaI > 0:
-        drr = drr1 / (drr2 ** R)
-    else:
-        drr = drr2 / (drr1 ** R)
-
-    return drr
 
 
 def rotate_around_z(x, y, z, angle_degrees):
@@ -220,48 +190,6 @@ def calculate_I1_gpu(voxels_on_lines_ct, CTData, pixelSpacing, sliceThickness, m
     # 计算最终强度
     I1 = I0 * torch.exp(-attenuation)
     return I1.cpu().numpy()
-
-
-def calculate_I1(traversedVoxels_ct, num_pixels, CTData, CTShape, muWater, muAir):
-    """
-    Calculate the X-ray intensity (I1) at the imaging plane using ray attenuation for CT and air.
-
-    Parameters:
-    traversedVoxels_ct: 3 x num_voxels x num_drr_pixels numpy array of global coordinates for X-ray traversed voxels.
-    CTGlobalCoords: N x 4 numpy array where the first three columns are (x, y, z) coordinates, and the 4th column is the CT value.
-    pixelSpacing: List or numpy array of pixel spacing in x and y directions [dx, dy].
-    sliceThickness: Thickness of each CT slice in mm.
-    SID: Source-to-imaging distance (mm).
-    I0: Initial X-ray intensity at the source.
-    muWater: X-ray attenuation coefficient for water.
-    muAir: X-ray attenuation coefficient for air.
-    ct_min: Minimum CT value in the dataset (for normalization to HU range).
-    ct_max: Maximum CT value in the dataset (for normalization to HU range).
-
-    Returns:
-    I1: 1D numpy array of length num_drr_pixels representing the X-ray intensity at the imaging plane for each pixel.
-    """
-    I0 = 1200
-    # Initialize I1
-    I1 = np.ones(num_pixels) * I0  # Start with initial intensity for each pixel
-    for pixel_idx in range(num_pixels):
-        # Extract the ray path for the current pixel (3 x num_voxels -> num_voxels x 3)
-        voxelPath = np.array(traversedVoxels_ct[pixel_idx])  # Shape: (num_voxels_per_ray, 3)
-        if voxelPath.size == 0:
-            continue
-        m = 0
-        CTValue = []  # 用于存储与 CT 数据相交的体素值
-        for point in voxelPath:
-            # 获取 CT 值，注意索引需要取整
-            CTValue.append(CTData[CTShape[1] - int(point[2]) - 1, int(point[0]) - 1, int(point[1]) - 1])
-            m += 1
-        # 如果有多个相交体素
-        if m >= 1:
-            # 计算 CT 衰减
-            CTValue = np.array(CTValue)
-            attenuation = np.average(CTValue * (muWater - muAir) / 1000 + muWater)
-            I1[pixel_idx] = I0 * np.exp(-attenuation)
-    return I1
 
 
 def calculate_bone_only_I1(traversedVoxels_ct, num_pixels, CTData, CTShape, muWater, muAir, bone_threshold):
@@ -446,73 +374,75 @@ def getDRR(x_tube, y_tube, z_tube, IPEL, OID, resolution, tileSize, couchAngle, 
     Returns:
         DRR: 2D numpy array representing the DRR image.
     """
-    I0 = 1200
     # CT information
     CTData = get_var("PixelsGrid")
     pixelSpacing = get_var("PixelSpacing")
+    if isinstance(couchAngle, float):
+        couchAngle = np.array([couchAngle])
+    for angle in couchAngle:
+        # Compute the new X-ray source coordinates after rotating the imaging system
+        [x_rotated, y_rotated, z_rotated] = rotate_around_z(x_tube, y_tube, z_tube, angle)
+        transferMatrix, translationVector = calculate_rotation_matrix_deltaD(x_rotated, y_rotated, z_rotated, OID)
+        SID = OID + (x_rotated ** 2 + y_rotated ** 2 + z_rotated ** 2) ** 0.5
 
-    # Compute the new X-ray source coordinates after rotating the imaging system
-    [x_rotated, y_rotated, z_rotated] = rotate_around_z(x_tube, y_tube, z_tube, couchAngle)
-    transferMatrix, translationVector = calculate_rotation_matrix_deltaD(x_rotated, y_rotated, z_rotated, OID)
-    SID = OID + (x_rotated ** 2 + y_rotated ** 2 + z_rotated ** 2) ** 0.5
+        # Prepare CT global coordinates
+        CTShape = np.array(CTData.shape)
 
-    # Prepare CT global coordinates
-    CTShape = np.array(CTData.shape)
+        # Initialize DRR as a 2D array
+        DRR = np.zeros((resolution, resolution))
 
-    # Initialize DRR as a 2D array
-    DRR = np.zeros((resolution, resolution))
+        # 物理距离 between imaging plane pixels
+        pixelDistance = IPEL / resolution
+        sectionNum = int(resolution / tileSize)
 
-    # 物理距离 between imaging plane pixels
-    pixelDistance = IPEL / resolution
-    sectionNum = int(resolution / tileSize)
+        # Block-wise calculation
+        for X in range(1, sectionNum + 1):
+            for Y in range(1, sectionNum + 1):
+                # Get imaging points for the current block
+                imagingPoints = get_imaging_points(X, Y, pixelDistance, resolution, tileSize)
 
-    # Block-wise calculation
-    for X in range(1, sectionNum + 1):
-        for Y in range(1, sectionNum + 1):
-            # Get imaging points for the current block
-            imagingPoints = get_imaging_points(X, Y, pixelDistance, resolution, tileSize)
+                # Compute voxel paths
+                voxels_on_lines = get_voxels_on_X_ray_lines(CTShape, pixelSpacing, sliceThickness,
+                                                            [x_rotated, y_rotated, z_rotated], imagingPoints,
+                                                            [iso_x, iso_y, iso_z], OID, SID)
 
-            # Compute voxel paths
-            voxels_on_lines = get_voxels_on_X_ray_lines(CTShape, pixelSpacing, sliceThickness,
-                                                        [x_rotated, y_rotated, z_rotated], imagingPoints,
-                                                        [iso_x, iso_y, iso_z], OID, SID)
+                # Apply global-to-CT coordinate transformation
+                voxels_on_lines_global = transform_voxels_to_global(voxels_on_lines, transferMatrix, translationVector)
 
-            # Apply global-to-CT coordinate transformation
-            voxels_on_lines_global = transform_voxels_to_global(voxels_on_lines, transferMatrix, translationVector)
+                # Translation to CT coordinate system
+                translation = np.array(
+                    [(iso_x - 1) * pixelSpacing[1], (iso_z - 1) * sliceThickness,
+                     (CTShape[0] - iso_y - 1) * pixelSpacing[1]]
+                ).reshape(3, 1, 1)
+                voxels_on_lines_ct = voxels_on_lines_global + translation
 
-            # Translation to CT coordinate system
-            translation = np.array(
-                [(iso_x - 1) * pixelSpacing[1], (iso_z - 1) * sliceThickness,
-                 (CTShape[0] - iso_y - 1) * pixelSpacing[1]]
-            ).reshape(3, 1, 1)
-            voxels_on_lines_ct = voxels_on_lines_global + translation
+                # 直接使用向量化的GPU计算
+                I1 = calculate_I1_gpu(
+                    voxels_on_lines_ct,
+                    CTData,
+                    pixelSpacing,
+                    sliceThickness,
+                    muWater
+                )
 
-            # 直接使用向量化的GPU计算
-            I1 = calculate_I1_gpu(
-                voxels_on_lines_ct,
-                CTData,
-                pixelSpacing,
-                sliceThickness,
-                muWater
-            )
+                # Reshape I1 into a tile of size (tileSize, tileSize)
+                I1_tile = I1.reshape((tileSize, tileSize), order='F')
 
-            # Reshape I1 into a tile of size (tileSize, tileSize)
-            I1_tile = I1.reshape((tileSize, tileSize), order='F')
+                # Fill the corresponding block in the DRR
+                x_start = (X - 1) * tileSize
+                x_end = X * tileSize
+                y_start = (Y - 1) * tileSize
+                y_end = Y * tileSize
+                DRR[y_start:y_end, x_start:x_end] = I1_tile
 
-            # Fill the corresponding block in the DRR
-            x_start = (X - 1) * tileSize
-            x_end = X * tileSize
-            y_start = (Y - 1) * tileSize
-            y_end = Y * tileSize
-            DRR[y_start:y_end, x_start:x_end] = I1_tile
+        # Save DRR as an image
+        # 归一化
+        DRR = (2 ** bitDepth) * (DRR - np.min(DRR)) / 200
+        DRR_flipped = cv2.flip(DRR, 0)
+        DRR_normalized = DRR_flipped.astype(np.uint8)
+        imageName = f"{Geoinfo_save_path}/saved DRR/DRR_{resolution}x{resolution}_CouchAngle{angle}_iso_{iso_x}_{iso_y}_{iso_z}_BitDepth_{bitDepth}_μwater{muWater}_μair{muAir}_{save_name}.png"
+        plt.imsave(imageName, DRR_flipped, cmap='gray', vmin=0, vmax=2 ** bitDepth)
 
-    # Save DRR as an image
-    # 归一化
-    DRR = (2 ** bitDepth) * (DRR - np.min(DRR)) / 200
-    DRR_flipped = cv2.flip(DRR, 0)
-    DRR_normalized = DRR_flipped.astype(np.uint8)
-    imageName = f"{Geoinfo_save_path}/saved DRR/DRR_{resolution}x{resolution}_CouchAngle{couchAngle}_iso_{iso_x}_{iso_y}_{iso_z}_BitDepth_{bitDepth}_μwater{muWater}_μair{muAir}_{save_name}.png"
-    plt.imsave(imageName, DRR_flipped, cmap='gray', vmin=0, vmax=2 ** bitDepth)
     return DRR_normalized
 
 
@@ -538,90 +468,92 @@ def get_bone_only_DRR(x_tube, y_tube, z_tube, IPEL, OID, resolution, tileSize, c
     # CT information
     CTData = get_var("PixelsGrid")
     pixelSpacing = get_var("PixelSpacing")
+    if isinstance(couchAngle, float):
+        couchAngle = np.array([couchAngle])
+    for angle in couchAngle:
+        # Compute the new X-ray source coordinates after rotating the imaging system
+        [x_rotated, y_rotated, z_rotated] = rotate_around_z(x_tube, y_tube, z_tube, angle)
+        transferMatrix, translationVector = calculate_rotation_matrix_deltaD(x_rotated, y_rotated, z_rotated, OID)
+        SID = OID + (x_rotated ** 2 + y_rotated ** 2 + z_rotated ** 2) ** 0.5
 
-    # Compute the new X-ray source coordinates after rotating the imaging system
-    [x_rotated, y_rotated, z_rotated] = rotate_around_z(x_tube, y_tube, z_tube, couchAngle)
-    transferMatrix, translationVector = calculate_rotation_matrix_deltaD(x_rotated, y_rotated, z_rotated, OID)
-    SID = OID + (x_rotated ** 2 + y_rotated ** 2 + z_rotated ** 2) ** 0.5
+        # Prepare CT global coordinates
+        CTShape = np.array(CTData.shape)
 
-    # Prepare CT global coordinates
-    CTShape = np.array(CTData.shape)
+        # Initialize DRR as a 2D array
+        DRR = np.zeros((resolution, resolution))
 
-    # Initialize DRR as a 2D array
-    DRR = np.zeros((resolution, resolution))
+        # Physical distance between imaging plane pixels
+        pixelDistance = IPEL / resolution
+        sectionNum = int(resolution / tileSize)
 
-    # Physical distance between imaging plane pixels
-    pixelDistance = IPEL / resolution
-    sectionNum = int(resolution / tileSize)
+        x_max = CTShape[0]
+        y_max = CTShape[2]
+        z_max = CTShape[1]
+        # Block-wise calculation
+        for X in range(1, sectionNum + 1):
+            for Y in range(1, sectionNum + 1):
+                # Get imaging points for the current block
+                imagingPoints = get_imaging_points(X, Y, pixelDistance, resolution, tileSize)
 
-    x_max = CTShape[0]
-    y_max = CTShape[2]
-    z_max = CTShape[1]
-    # Block-wise calculation
-    for X in range(1, sectionNum + 1):
-        for Y in range(1, sectionNum + 1):
-            # Get imaging points for the current block
-            imagingPoints = get_imaging_points(X, Y, pixelDistance, resolution, tileSize)
+                # Compute voxel paths and intensities
+                voxels_on_lines = get_voxels_on_X_ray_lines(CTShape, pixelSpacing, sliceThickness,
+                                                            [x_rotated, y_rotated, z_rotated], imagingPoints,
+                                                            [iso_x, iso_y, iso_z], OID, SID)
+                # Apply global-to-CT coordinate transformation
+                voxels_on_lines_global = transform_voxels_to_global(voxels_on_lines, transferMatrix, translationVector)
 
-            # Compute voxel paths and intensities
-            voxels_on_lines = get_voxels_on_X_ray_lines(CTShape, pixelSpacing, sliceThickness,
-                                                        [x_rotated, y_rotated, z_rotated], imagingPoints,
-                                                        [iso_x, iso_y, iso_z], OID, SID)
-            # Apply global-to-CT coordinate transformation
-            voxels_on_lines_global = transform_voxels_to_global(voxels_on_lines, transferMatrix, translationVector)
+                # Translation to CT coordinate system
+                translation = np.array(
+                    [(iso_x - 1) * pixelSpacing[1], (iso_z - 1) * sliceThickness,
+                     (CTShape[0] - iso_y - 1) * pixelSpacing[1]]
+                ).reshape(3, 1, 1)
+                voxels_on_lines_ct = voxels_on_lines_global + translation
 
-            # Translation to CT coordinate system
-            translation = np.array(
-                [(iso_x - 1) * pixelSpacing[1], (iso_z - 1) * sliceThickness,
-                 (CTShape[0] - iso_y - 1) * pixelSpacing[1]]
-            ).reshape(3, 1, 1)
-            voxels_on_lines_ct = voxels_on_lines_global + translation
+                # Discretize the coordinates to CT grid
+                voxels_on_lines_ct[0, :, :] = np.round(voxels_on_lines_ct[0, :, :] / pixelSpacing[0])
+                voxels_on_lines_ct[1, :, :] = np.round(voxels_on_lines_ct[1, :, :] / sliceThickness)
+                voxels_on_lines_ct[2, :, :] = np.round(voxels_on_lines_ct[2, :, :] / pixelSpacing[1])
 
-            # Discretize the coordinates to CT grid
-            voxels_on_lines_ct[0, :, :] = np.round(voxels_on_lines_ct[0, :, :] / pixelSpacing[0])
-            voxels_on_lines_ct[1, :, :] = np.round(voxels_on_lines_ct[1, :, :] / sliceThickness)
-            voxels_on_lines_ct[2, :, :] = np.round(voxels_on_lines_ct[2, :, :] / pixelSpacing[1])
+                # Initialize the output as a 3D list
+                num_pixels = voxels_on_lines_ct.shape[2]
+                voxels_on_lines_ct_list = [[] for _ in range(num_pixels)]  # Create a list for each pixel
 
-            # Initialize the output as a 3D list
-            num_pixels = voxels_on_lines_ct.shape[2]
-            voxels_on_lines_ct_list = [[] for _ in range(num_pixels)]  # Create a list for each pixel
+                # Process each pixel separately
+                for pixel_idx in range(num_pixels):
+                    # Extract the voxel path for this pixel
+                    voxel_path = voxels_on_lines_ct[:, :, pixel_idx].T  # Shape: (num_voxels, 3)
 
-            # Process each pixel separately
-            for pixel_idx in range(num_pixels):
-                # Extract the voxel path for this pixel
-                voxel_path = voxels_on_lines_ct[:, :, pixel_idx].T  # Shape: (num_voxels, 3)
+                    # Remove points outside the valid range
+                    valid_mask = (
+                            (voxel_path[:, 0] >= 0) & (voxel_path[:, 0] <= x_max - 1) &
+                            (voxel_path[:, 1] >= 0) & (voxel_path[:, 1] <= y_max - 1) &  # 注意：z 对应 CTShape 的第 2 轴
+                            (voxel_path[:, 2] >= 0) & (voxel_path[:, 2] <= z_max - 1)
+                    )
+                    voxel_path = voxel_path[valid_mask]  # 保留有效点
 
-                # Remove points outside the valid range
-                valid_mask = (
-                        (voxel_path[:, 0] >= 0) & (voxel_path[:, 0] <= x_max - 1) &
-                        (voxel_path[:, 1] >= 0) & (voxel_path[:, 1] <= y_max - 1) &  # 注意：z 对应 CTShape 的第 2 轴
-                        (voxel_path[:, 2] >= 0) & (voxel_path[:, 2] <= z_max - 1)
-                )
-                voxel_path = voxel_path[valid_mask]  # 保留有效点
+                    # Convert to a list and store it
+                    voxels_on_lines_ct_list[pixel_idx] = voxel_path.tolist()
 
-                # Convert to a list and store it
-                voxels_on_lines_ct_list[pixel_idx] = voxel_path.tolist()
+                I1 = calculate_bone_only_I1(voxels_on_lines_ct_list, num_pixels, CTData, CTShape, muWater, muAir,
+                                            bone_threshold)
 
-            I1 = calculate_bone_only_I1(voxels_on_lines_ct_list, num_pixels, CTData, CTShape, muWater, muAir,
-                                        bone_threshold)
+                # Reshape I1 into a tile of size (tileSize, tileSize)
+                I1_tile = I1.reshape((tileSize, tileSize), order='F')
 
-            # Reshape I1 into a tile of size (tileSize, tileSize)
-            I1_tile = I1.reshape((tileSize, tileSize), order='F')
+                # Fill the corresponding block in the DRR
+                x_start = (X - 1) * tileSize
+                x_end = X * tileSize
+                y_start = (Y - 1) * tileSize
+                y_end = Y * tileSize
+                DRR[y_start:y_end, x_start:x_end] = I1_tile
 
-            # Fill the corresponding block in the DRR
-            x_start = (X - 1) * tileSize
-            x_end = X * tileSize
-            y_start = (Y - 1) * tileSize
-            y_end = Y * tileSize
-            DRR[y_start:y_end, x_start:x_end] = I1_tile
-
-    # Save DRR as an image
-    # 归一化
-    DRR = (2 ** bitDepth) * (DRR - np.min(DRR)) / 200
-    DRR_flipped = cv2.flip(DRR, 0)
-    DRR_normalized = DRR_flipped.astype(np.uint8)
-    imageName = f"{Geoinfo_save_path}/saved DRR/bone_only_DRR_{resolution}x{resolution}_CouchAngle{couchAngle}_iso_{iso_x}_{iso_y}_{iso_z}_BitDepth_{bitDepth}_μwater{muWater}_μair{muAir}_{save_name}.png"
-    plt.imsave(imageName, DRR_flipped, cmap='gray')
+        # Save DRR as an image
+        # 归一化
+        DRR = (2 ** bitDepth) * (DRR - np.min(DRR)) / 200
+        DRR_flipped = cv2.flip(DRR, 0)
+        DRR_normalized = DRR_flipped.astype(np.uint8)
+        imageName = f"{Geoinfo_save_path}/saved DRR/bone_only_DRR_{resolution}x{resolution}_CouchAngle{angle}_iso_{iso_x}_{iso_y}_{iso_z}_BitDepth_{bitDepth}_μwater{muWater}_μair{muAir}_{save_name}.png"
+        plt.imsave(imageName, DRR_flipped, cmap='gray')
     return DRR_normalized
 
 
@@ -648,92 +580,94 @@ def get_bone_suppressed_DRR_constant(x_tube, y_tube, z_tube, IPEL, OID, resoluti
     # CT information
     CTData = get_var("PixelsGrid")
     pixelSpacing = get_var("PixelSpacing")
+    if isinstance(couchAngle, float):
+        couchAngle = np.array([couchAngle])
+    for angle in couchAngle:
+        # Compute the new X-ray source coordinates after rotating the imaging system
+        [x_rotated, y_rotated, z_rotated] = rotate_around_z(x_tube, y_tube, z_tube, angle)
+        transferMatrix, translationVector = calculate_rotation_matrix_deltaD(x_rotated, y_rotated, z_rotated, OID)
+        SID = OID + (x_rotated ** 2 + y_rotated ** 2 + z_rotated ** 2) ** 0.5
 
-    # Compute the new X-ray source coordinates after rotating the imaging system
-    [x_rotated, y_rotated, z_rotated] = rotate_around_z(x_tube, y_tube, z_tube, couchAngle)
-    transferMatrix, translationVector = calculate_rotation_matrix_deltaD(x_rotated, y_rotated, z_rotated, OID)
-    SID = OID + (x_rotated ** 2 + y_rotated ** 2 + z_rotated ** 2) ** 0.5
+        # Prepare CT global coordinates
+        CTShape = np.array(CTData.shape)
 
-    # Prepare CT global coordinates
-    CTShape = np.array(CTData.shape)
+        # Initialize DRR as a 2D array
+        DRR = np.zeros((resolution, resolution))
 
-    # Initialize DRR as a 2D array
-    DRR = np.zeros((resolution, resolution))
+        # Physical distance between imaging plane pixels
+        pixelDistance = IPEL / resolution
+        sectionNum = int(resolution / tileSize)
 
-    # Physical distance between imaging plane pixels
-    pixelDistance = IPEL / resolution
-    sectionNum = int(resolution / tileSize)
+        x_max = CTShape[0]
+        y_max = CTShape[2]
+        z_max = CTShape[1]
 
-    x_max = CTShape[0]
-    y_max = CTShape[2]
-    z_max = CTShape[1]
+        # Block-wise calculation
+        for X in range(1, sectionNum + 1):
+            for Y in range(1, sectionNum + 1):
+                # Get imaging points for the current block
+                imagingPoints = get_imaging_points(X, Y, pixelDistance, resolution, tileSize)
 
-    # Block-wise calculation
-    for X in range(1, sectionNum + 1):
-        for Y in range(1, sectionNum + 1):
-            # Get imaging points for the current block
-            imagingPoints = get_imaging_points(X, Y, pixelDistance, resolution, tileSize)
+                # Compute voxel paths and intensities
+                voxels_on_lines = get_voxels_on_X_ray_lines(CTShape, pixelSpacing, sliceThickness,
+                                                            [x_rotated, y_rotated, z_rotated], imagingPoints,
+                                                            [iso_x, iso_y, iso_z], OID, SID)
+                # Apply global-to-CT coordinate transformation
+                voxels_on_lines_global = transform_voxels_to_global(voxels_on_lines, transferMatrix, translationVector)
 
-            # Compute voxel paths and intensities
-            voxels_on_lines = get_voxels_on_X_ray_lines(CTShape, pixelSpacing, sliceThickness,
-                                                        [x_rotated, y_rotated, z_rotated], imagingPoints,
-                                                        [iso_x, iso_y, iso_z], OID, SID)
-            # Apply global-to-CT coordinate transformation
-            voxels_on_lines_global = transform_voxels_to_global(voxels_on_lines, transferMatrix, translationVector)
+                # Translation to CT coordinate system
+                translation = np.array(
+                    [(iso_x - 1) * pixelSpacing[1], (iso_z - 1) * sliceThickness,
+                     (CTShape[0] - iso_y - 1) * pixelSpacing[1]]
+                ).reshape(3, 1, 1)
+                voxels_on_lines_ct = voxels_on_lines_global + translation
 
-            # Translation to CT coordinate system
-            translation = np.array(
-                [(iso_x - 1) * pixelSpacing[1], (iso_z - 1) * sliceThickness,
-                 (CTShape[0] - iso_y - 1) * pixelSpacing[1]]
-            ).reshape(3, 1, 1)
-            voxels_on_lines_ct = voxels_on_lines_global + translation
+                # Discretize the coordinates to CT grid
+                voxels_on_lines_ct[0, :, :] = np.round(voxels_on_lines_ct[0, :, :] / pixelSpacing[0])
+                voxels_on_lines_ct[1, :, :] = np.round(voxels_on_lines_ct[1, :, :] / sliceThickness)
+                voxels_on_lines_ct[2, :, :] = np.round(voxels_on_lines_ct[2, :, :] / pixelSpacing[1])
 
-            # Discretize the coordinates to CT grid
-            voxels_on_lines_ct[0, :, :] = np.round(voxels_on_lines_ct[0, :, :] / pixelSpacing[0])
-            voxels_on_lines_ct[1, :, :] = np.round(voxels_on_lines_ct[1, :, :] / sliceThickness)
-            voxels_on_lines_ct[2, :, :] = np.round(voxels_on_lines_ct[2, :, :] / pixelSpacing[1])
+                # Initialize the output as a 3D list
+                num_pixels = voxels_on_lines_ct.shape[2]
+                voxels_on_lines_ct_list = [[] for _ in range(num_pixels)]  # Create a list for each pixel
 
-            # Initialize the output as a 3D list
-            num_pixels = voxels_on_lines_ct.shape[2]
-            voxels_on_lines_ct_list = [[] for _ in range(num_pixels)]  # Create a list for each pixel
+                # Process each pixel separately
+                for pixel_idx in range(num_pixels):
+                    # Extract the voxel path for this pixel
+                    voxel_path = voxels_on_lines_ct[:, :, pixel_idx].T  # Shape: (num_voxels, 3)
 
-            # Process each pixel separately
-            for pixel_idx in range(num_pixels):
-                # Extract the voxel path for this pixel
-                voxel_path = voxels_on_lines_ct[:, :, pixel_idx].T  # Shape: (num_voxels, 3)
+                    # Remove points outside the valid range
+                    valid_mask = (
+                            (voxel_path[:, 0] >= 0) & (voxel_path[:, 0] <= x_max - 1) &
+                            (voxel_path[:, 1] >= 0) & (voxel_path[:, 1] <= y_max - 1) &  # 注意：z 对应 CTShape 的第 2 轴
+                            (voxel_path[:, 2] >= 0) & (voxel_path[:, 2] <= z_max - 1)
+                    )
+                    voxel_path = voxel_path[valid_mask]  # 保留有效点
 
-                # Remove points outside the valid range
-                valid_mask = (
-                        (voxel_path[:, 0] >= 0) & (voxel_path[:, 0] <= x_max - 1) &
-                        (voxel_path[:, 1] >= 0) & (voxel_path[:, 1] <= y_max - 1) &  # 注意：z 对应 CTShape 的第 2 轴
-                        (voxel_path[:, 2] >= 0) & (voxel_path[:, 2] <= z_max - 1)
-                )
-                voxel_path = voxel_path[valid_mask]  # 保留有效点
+                    # Convert to a list and store it
+                    voxels_on_lines_ct_list[pixel_idx] = voxel_path.tolist()
 
-                # Convert to a list and store it
-                voxels_on_lines_ct_list[pixel_idx] = voxel_path.tolist()
+                I1 = calculate_bone_suppressed_I1_constant(voxels_on_lines_ct_list, num_pixels, CTData, CTShape, muWater,
+                                                           muAir, bone_threshold, constant)
 
-            I1 = calculate_bone_suppressed_I1_constant(voxels_on_lines_ct_list, num_pixels, CTData, CTShape, muWater,
-                                                       muAir, bone_threshold, constant)
+                # Reshape I1 into a tile of size (tileSize, tileSize)
+                I1_tile = I1.reshape((tileSize, tileSize), order='F')
 
-            # Reshape I1 into a tile of size (tileSize, tileSize)
-            I1_tile = I1.reshape((tileSize, tileSize), order='F')
+                # Fill the corresponding block in the DRR
+                x_start = (X - 1) * tileSize
+                x_end = X * tileSize
+                y_start = (Y - 1) * tileSize
+                y_end = Y * tileSize
+                DRR[y_start:y_end, x_start:x_end] = I1_tile
 
-            # Fill the corresponding block in the DRR
-            x_start = (X - 1) * tileSize
-            x_end = X * tileSize
-            y_start = (Y - 1) * tileSize
-            y_end = Y * tileSize
-            DRR[y_start:y_end, x_start:x_end] = I1_tile
+        # Save DRR as an image
 
-    # Save DRR as an image
-
-    # 归一化
-    DRR = (2 ** bitDepth) * (DRR - np.min(DRR)) / 200
-    DRR_flipped = cv2.flip(DRR, 0)
-    DRR_normalized = DRR_flipped.astype(np.uint8)
-    imageName = f"{Geoinfo_save_path}/saved DRR/bone_suppressed_DRR_constant{constant}_{resolution}x{resolution}_CouchAngle{couchAngle}_iso_{iso_x}_{iso_y}_{iso_z}_BitDepth_{bitDepth}_μwater{muWater}_μair{muAir}_{save_name}.png"
-    plt.imsave(imageName, DRR_flipped, cmap='gray', vmin=0, vmax=2 ** bitDepth)
+        # 归一化
+        DRR = (2 ** bitDepth) * (DRR - np.min(DRR)) / 200
+        DRR_flipped = cv2.flip(DRR, 0)
+        DRR_normalized = DRR_flipped.astype(np.uint8)
+        imageName = f"{Geoinfo_save_path}/saved DRR/bone_suppressed_DRR_constant{constant}_{resolution}x{resolution}_CouchAngle{angle}_iso_{iso_x}_{iso_y}_{iso_z}_BitDepth_{bitDepth}_μwater{muWater}_μair{muAir}_{save_name}.png"
+        plt.imsave(imageName, DRR_flipped, cmap='gray', vmin=0, vmax=2 ** bitDepth)
     return DRR_normalized
 
 
@@ -760,91 +694,93 @@ def get_bone_enhanced_DRR(x_tube, y_tube, z_tube, IPEL, OID, resolution, tileSiz
     # CT information
     CTData = get_var("PixelsGrid")
     pixelSpacing = get_var("PixelSpacing")
+    if isinstance(couchAngle, float):
+        couchAngle = np.array([couchAngle])
+    for angle in couchAngle:
+        # Compute the new X-ray source coordinates after rotating the imaging system
+        [x_rotated, y_rotated, z_rotated] = rotate_around_z(x_tube, y_tube, z_tube, angle)
+        transferMatrix, translationVector = calculate_rotation_matrix_deltaD(x_rotated, y_rotated, z_rotated, OID)
+        SID = OID + (x_rotated ** 2 + y_rotated ** 2 + z_rotated ** 2) ** 0.5
 
-    # Compute the new X-ray source coordinates after rotating the imaging system
-    [x_rotated, y_rotated, z_rotated] = rotate_around_z(x_tube, y_tube, z_tube, couchAngle)
-    transferMatrix, translationVector = calculate_rotation_matrix_deltaD(x_rotated, y_rotated, z_rotated, OID)
-    SID = OID + (x_rotated ** 2 + y_rotated ** 2 + z_rotated ** 2) ** 0.5
+        # Prepare CT global coordinates
+        CTShape = np.array(CTData.shape)
 
-    # Prepare CT global coordinates
-    CTShape = np.array(CTData.shape)
+        # Initialize DRR as a 2D array
+        DRR = np.zeros((resolution, resolution))
 
-    # Initialize DRR as a 2D array
-    DRR = np.zeros((resolution, resolution))
+        # Physical distance between imaging plane pixels
+        pixelDistance = IPEL / resolution
+        sectionNum = int(resolution / tileSize)
 
-    # Physical distance between imaging plane pixels
-    pixelDistance = IPEL / resolution
-    sectionNum = int(resolution / tileSize)
+        x_max = CTShape[0]
+        y_max = CTShape[2]
+        z_max = CTShape[1]
 
-    x_max = CTShape[0]
-    y_max = CTShape[2]
-    z_max = CTShape[1]
+        # Block-wise calculation
+        for X in range(1, sectionNum + 1):
+            for Y in range(1, sectionNum + 1):
+                # Get imaging points for the current block
+                imagingPoints = get_imaging_points(X, Y, pixelDistance, resolution, tileSize)
 
-    # Block-wise calculation
-    for X in range(1, sectionNum + 1):
-        for Y in range(1, sectionNum + 1):
-            # Get imaging points for the current block
-            imagingPoints = get_imaging_points(X, Y, pixelDistance, resolution, tileSize)
+                # Compute voxel paths and intensities
+                voxels_on_lines = get_voxels_on_X_ray_lines(CTShape, pixelSpacing, sliceThickness,
+                                                            [x_rotated, y_rotated, z_rotated], imagingPoints,
+                                                            [iso_x, iso_y, iso_z], OID, SID)
+                # Apply global-to-CT coordinate transformation
+                voxels_on_lines_global = transform_voxels_to_global(voxels_on_lines, transferMatrix, translationVector)
 
-            # Compute voxel paths and intensities
-            voxels_on_lines = get_voxels_on_X_ray_lines(CTShape, pixelSpacing, sliceThickness,
-                                                        [x_rotated, y_rotated, z_rotated], imagingPoints,
-                                                        [iso_x, iso_y, iso_z], OID, SID)
-            # Apply global-to-CT coordinate transformation
-            voxels_on_lines_global = transform_voxels_to_global(voxels_on_lines, transferMatrix, translationVector)
+                # Translation to CT coordinate system
+                translation = np.array(
+                    [(iso_x - 1) * pixelSpacing[1], (iso_z - 1) * sliceThickness,
+                     (CTShape[0] - iso_y - 1) * pixelSpacing[1]]
+                ).reshape(3, 1, 1)
+                voxels_on_lines_ct = voxels_on_lines_global + translation
 
-            # Translation to CT coordinate system
-            translation = np.array(
-                [(iso_x - 1) * pixelSpacing[1], (iso_z - 1) * sliceThickness,
-                 (CTShape[0] - iso_y - 1) * pixelSpacing[1]]
-            ).reshape(3, 1, 1)
-            voxels_on_lines_ct = voxels_on_lines_global + translation
+                # Discretize the coordinates to CT grid
+                voxels_on_lines_ct[0, :, :] = np.round(voxels_on_lines_ct[0, :, :] / pixelSpacing[0])
+                voxels_on_lines_ct[1, :, :] = np.round(voxels_on_lines_ct[1, :, :] / sliceThickness)
+                voxels_on_lines_ct[2, :, :] = np.round(voxels_on_lines_ct[2, :, :] / pixelSpacing[1])
 
-            # Discretize the coordinates to CT grid
-            voxels_on_lines_ct[0, :, :] = np.round(voxels_on_lines_ct[0, :, :] / pixelSpacing[0])
-            voxels_on_lines_ct[1, :, :] = np.round(voxels_on_lines_ct[1, :, :] / sliceThickness)
-            voxels_on_lines_ct[2, :, :] = np.round(voxels_on_lines_ct[2, :, :] / pixelSpacing[1])
+                # Initialize the output as a 3D list
+                num_pixels = voxels_on_lines_ct.shape[2]
+                voxels_on_lines_ct_list = [[] for _ in range(num_pixels)]  # Create a list for each pixel
 
-            # Initialize the output as a 3D list
-            num_pixels = voxels_on_lines_ct.shape[2]
-            voxels_on_lines_ct_list = [[] for _ in range(num_pixels)]  # Create a list for each pixel
+                # Process each pixel separately
+                for pixel_idx in range(num_pixels):
+                    # Extract the voxel path for this pixel
+                    voxel_path = voxels_on_lines_ct[:, :, pixel_idx].T  # Shape: (num_voxels, 3)
 
-            # Process each pixel separately
-            for pixel_idx in range(num_pixels):
-                # Extract the voxel path for this pixel
-                voxel_path = voxels_on_lines_ct[:, :, pixel_idx].T  # Shape: (num_voxels, 3)
+                    # Remove points outside the valid range
+                    valid_mask = (
+                            (voxel_path[:, 0] >= 0) & (voxel_path[:, 0] <= x_max - 1) &
+                            (voxel_path[:, 1] >= 0) & (voxel_path[:, 1] <= y_max - 1) &  # 注意：z 对应 CTShape 的第 2 轴
+                            (voxel_path[:, 2] >= 0) & (voxel_path[:, 2] <= z_max - 1)
+                    )
+                    voxel_path = voxel_path[valid_mask]  # 保留有效点
 
-                # Remove points outside the valid range
-                valid_mask = (
-                        (voxel_path[:, 0] >= 0) & (voxel_path[:, 0] <= x_max - 1) &
-                        (voxel_path[:, 1] >= 0) & (voxel_path[:, 1] <= y_max - 1) &  # 注意：z 对应 CTShape 的第 2 轴
-                        (voxel_path[:, 2] >= 0) & (voxel_path[:, 2] <= z_max - 1)
-                )
-                voxel_path = voxel_path[valid_mask]  # 保留有效点
+                    # Convert to a list and store it
+                    voxels_on_lines_ct_list[pixel_idx] = voxel_path.tolist()
 
-                # Convert to a list and store it
-                voxels_on_lines_ct_list[pixel_idx] = voxel_path.tolist()
+                I1 = calculate_bone_enhanced_I1(voxels_on_lines_ct_list, num_pixels, CTData, CTShape, muWater, muAir,
+                                                bone_threshold, enhance_factor)
 
-            I1 = calculate_bone_enhanced_I1(voxels_on_lines_ct_list, num_pixels, CTData, CTShape, muWater, muAir,
-                                            bone_threshold, enhance_factor)
+                # Reshape I1 into a tile of size (tileSize, tileSize)
+                I1_tile = I1.reshape((tileSize, tileSize), order='F')
 
-            # Reshape I1 into a tile of size (tileSize, tileSize)
-            I1_tile = I1.reshape((tileSize, tileSize), order='F')
+                # Fill the corresponding block in the DRR
+                x_start = (X - 1) * tileSize
+                x_end = X * tileSize
+                y_start = (Y - 1) * tileSize
+                y_end = Y * tileSize
+                DRR[y_start:y_end, x_start:x_end] = I1_tile
 
-            # Fill the corresponding block in the DRR
-            x_start = (X - 1) * tileSize
-            x_end = X * tileSize
-            y_start = (Y - 1) * tileSize
-            y_end = Y * tileSize
-            DRR[y_start:y_end, x_start:x_end] = I1_tile
-
-    # Save DRR as an image
-    # 归一化
-    DRR = (2 ** bitDepth) * (DRR - np.min(DRR)) / 200
-    DRR_flipped = cv2.flip(DRR, 0)
-    DRR_normalized = DRR_flipped.astype(np.uint8)
-    imageName = f"{Geoinfo_save_path}/saved DRR/bone_enhanced_DRR_enhanceFactor{enhance_factor}_{resolution}x{resolution}_CouchAngle{couchAngle}_iso_{iso_x}_{iso_y}_{iso_z}_BitDepth_{bitDepth}_μwater{muWater}_μair{muAir}_{save_name}.png"
-    plt.imsave(imageName, DRR_flipped, cmap='gray', vmin=0, vmax=2 ** bitDepth)
+        # Save DRR as an image
+        # 归一化
+        DRR = (2 ** bitDepth) * (DRR - np.min(DRR)) / 200
+        DRR_flipped = cv2.flip(DRR, 0)
+        DRR_normalized = DRR_flipped.astype(np.uint8)
+        imageName = f"{Geoinfo_save_path}/saved DRR/bone_enhanced_DRR_enhanceFactor{enhance_factor}_{resolution}x{resolution}_CouchAngle{angle}_iso_{iso_x}_{iso_y}_{iso_z}_BitDepth_{bitDepth}_μwater{muWater}_μair{muAir}_{save_name}.png"
+        plt.imsave(imageName, DRR_flipped, cmap='gray', vmin=0, vmax=2 ** bitDepth)
     return DRR_normalized
 
 
@@ -863,117 +799,10 @@ def get_mu(material, energy, interpolated_data):
     return np.interp(energy, energies, mu_values)
 
 
-def compute_DRR(x_tube, y_tube, z_tube, IPEL, OID, resolution, tileSize, couchAngle, iso_x, iso_y, iso_z, sliceThickness, muWater, muAir):
-    """Compute the raw DRR intensity array without normalization or saving."""
-    I0 = 1200
-    CTData = get_var("PixelsGrid")
-    pixelSpacing = get_var("PixelSpacing")
-
-    [x_rotated, y_rotated, z_rotated] = rotate_around_z(x_tube, y_tube, z_tube, couchAngle)
-    transferMatrix, translationVector = calculate_rotation_matrix_deltaD(x_rotated, y_rotated, z_rotated, OID)
-    SID = OID + (x_rotated ** 2 + y_rotated ** 2 + z_rotated ** 2) ** 0.5
-
-    CTShape = np.array(CTData.shape)
-    DRR = np.zeros((resolution, resolution))
-    pixelDistance = IPEL / resolution
-    sectionNum = int(resolution / tileSize)
-
-    x_max = CTShape[0]
-    y_max = CTShape[2]
-    z_max = CTShape[1]
-
-    for X in range(1, sectionNum + 1):
-        for Y in range(1, sectionNum + 1):
-            imagingPoints = get_imaging_points(X, Y, pixelDistance, resolution, tileSize)
-            voxels_on_lines = get_voxels_on_X_ray_lines(CTShape, pixelSpacing, sliceThickness,
-                                                        [x_rotated, y_rotated, z_rotated], imagingPoints,
-                                                        [iso_x, iso_y, iso_z], OID, SID)
-            voxels_on_lines_global = transform_voxels_to_global(voxels_on_lines, transferMatrix, translationVector)
-            translation = np.array([(iso_x - 1) * pixelSpacing[1], (iso_z - 1) * sliceThickness,
-                                    (CTShape[0] - iso_y - 1) * pixelSpacing[1]]).reshape(3, 1, 1)
-            voxels_on_lines_ct = voxels_on_lines_global + translation
-
-            voxels_on_lines_ct[0, :, :] = np.round(voxels_on_lines_ct[0, :, :] / pixelSpacing[0])
-            voxels_on_lines_ct[1, :, :] = np.round(voxels_on_lines_ct[1, :, :] / sliceThickness)
-            voxels_on_lines_ct[2, :, :] = np.round(voxels_on_lines_ct[2, :, :] / pixelSpacing[1])
-
-            num_pixels = voxels_on_lines_ct.shape[2]
-            voxels_on_lines_ct_list = [[] for _ in range(num_pixels)]
-
-            for pixel_idx in range(num_pixels):
-                voxel_path = voxels_on_lines_ct[:, :, pixel_idx].T
-                valid_mask = ((voxel_path[:, 0] >= 0) & (voxel_path[:, 0] <= x_max - 1) &
-                              (voxel_path[:, 1] >= 0) & (voxel_path[:, 1] <= y_max - 1) &
-                              (voxel_path[:, 2] >= 0) & (voxel_path[:, 2] <= z_max - 1))
-                voxel_path = voxel_path[valid_mask]
-                voxels_on_lines_ct_list[pixel_idx] = voxel_path.tolist()
-
-            I1 = calculate_I1(voxels_on_lines_ct_list, num_pixels, CTData, CTShape, muWater, muAir)
-            I1_tile = I1.reshape((tileSize, tileSize), order='F')
-            x_start, x_end = (X - 1) * tileSize, X * tileSize
-            y_start, y_end = (Y - 1) * tileSize, Y * tileSize
-            DRR[y_start:y_end, x_start:x_end] = I1_tile
-
-    return DRR
-
-
 def get_bone_suppressed_DRR_dual_energy(x_tube, y_tube, z_tube, IPEL, OID, resolution, tileSize, couchAngle, iso_x,
                                         iso_y, iso_z, sliceThickness, save_name, Geoinfo_save_path, muWater, muAir,
                                         bitDepth, deltaI, dictionary):
-    """
-        Generates a bone-suppressed DRR using the dual-energy method.
-
-        Parameters:
-            x_tube, y_tube, z_tube: X-ray source position in global coordinates (mm).
-            IPEL: Side length of the imaging area (mm).
-            OID: Object-to-imaging plane distance (mm).
-            resolution: Resolution of the imaging area (e.g., 1000 for 1000x1000).
-            tileSize: Size of image blocks for memory optimization.
-            couchAngle: Couch rotation angle (degrees).
-            iso_x, iso_y, iso_z: Beam center coordinates in CT coordinate system (mm).
-            sliceThickness: Thickness of CT slices (mm).
-            save_name: Base name for the saved image file.
-            Geoinfo_save_path: Directory path to save the DRR image.
-            I0: Initial X-ray intensity at the source.
-            muWater: Attenuation coefficient for water at lower energy (cm²/g).
-            muAir: Attenuation coefficient for air at lower energy (cm²/g).
-            bitDepth: Bit depth for the output image (e.g., 8 for 0-255 range).
-            deltaI: Energy difference between the two X-ray energies (keV).
-            dictionary: Interpolated data with attenuation coefficients for water and air.
-
-        Returns:
-            DRR_flipped: 2D numpy array of the bone-suppressed DRR image.
-        """
-    I0 = 1200
-    # Step 2: Calculate E2
-    E2 = I0 + deltaI
-
-    # Step 3: Get attenuation coefficients for E2
-    muWater2 = get_mu("water", E2, dictionary)
-    muAir2 = get_mu("air", E2, dictionary)
-
-    # Step 4: Generate DRR at E1 (lower energy)
-    DRR1 = compute_DRR(x_tube, y_tube, z_tube, IPEL, OID, resolution, tileSize, couchAngle, iso_x, iso_y, iso_z,
-                       sliceThickness, muWater, muAir)
-
-    # Step 5: Generate DRR at E2 (higher energy)
-    DRR2 = compute_DRR(x_tube, y_tube, z_tube, IPEL, OID, resolution, tileSize, couchAngle, iso_x, iso_y, iso_z,
-                       sliceThickness, muWater2, muAir2)
-
-    # Step 6: Suppress bones using dual-energy method
-    DRR_suppressed = suppress_bones(DRR1, DRR2, muWater, muWater2, muAir, muAir2, deltaI)
-
-    # Step 7: Normalize and save the image
-    WA = I0 * np.exp(- muWater - muAir)
-    DRR_normalized = (2 ** bitDepth) * (DRR_suppressed - WA) / (I0 - WA)
-    DRR_normalized = np.clip(DRR_normalized, 0, 2 ** bitDepth - 1)  # Ensure values stay within bit depth range
-    DRR_normalized = DRR_normalized.astype(np.uint8)
-    DRR_flipped = cv2.flip(DRR_normalized, 0)
-
-    imageName = f"{Geoinfo_save_path}/saved DRR/bone_suppressed_DRR_dual_energy_deltaI{deltaI}_{resolution}x{resolution}_CouchAngle{couchAngle}_iso_{iso_x}_{iso_y}_{iso_z}_BitDepth_{bitDepth}_μwater{muWater}_μair{muAir}_{save_name}.png"
-    plt.imsave(imageName, DRR_flipped, cmap='gray', vmin=0, vmax=2 ** bitDepth)
-
-    return DRR_flipped
+    return np.zeros(resolution, resolution)
 
 
 def calculate_Label(voxels_on_lines_ct_list, num_pixels, Data3D, CTShape, threshold):
@@ -995,93 +824,132 @@ def calculate_Label(voxels_on_lines_ct_list, num_pixels, Data3D, CTShape, thresh
     return I
 
 
-def getLabel(x_tube, y_tube, z_tube, IPEL, OID, resolution, tileSize, couchAngle, iso_x, iso_y, iso_z, sliceThickness,
-           save_name, Geoinfo_save_path, threshold):
+def calculate_Label_gpu(voxels_on_lines_ct, Data3D, CTShape, threshold, pixelSpacing, sliceThickness):
+    """
+    GPU-accelerated version of label calculation function.
 
+    Parameters:
+    - voxels_on_lines_ct: 3D torch tensor (3, num_points, num_pixels)
+    - Data3D: 3D torch tensor (CTShape[1], CTShape[0], CTShape[2])
+    - CTShape: Tuple of CT data shape (x, z, y)
+    - threshold: Integer threshold for labeled voxel count
+
+    Returns:
+    - I: 1D numpy array of shape (num_pixels,) with values 0 or 255
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Ensure data is on GPU
+    voxels_tensor = voxels_on_lines_ct.to(device)
+    Data3D_tensor = torch.from_numpy(Data3D).float().to(device)
+
+    # Get CT dimensions
+    x_max, z_max, y_max = CTShape[0], CTShape[1], CTShape[2]
+
+    # Compute CT indices (vectorized)
+    z_idx = (CTShape[1] - 1 - (voxels_tensor[2] / pixelSpacing[1]).round().long()).clamp(0, z_max - 1)
+    x_idx = ((voxels_tensor[0] / pixelSpacing[0]).round().long() - 1).clamp(0, x_max - 1)
+    y_idx = ((voxels_tensor[1] / sliceThickness).round().long() - 1).clamp(0, y_max - 1)
+
+    # Fetch voxel values
+    voxel_values = Data3D_tensor[z_idx, x_idx, y_idx]  # Shape: (num_points, num_pixels)
+
+    # Identify labeled voxels
+    is_labeled = (voxel_values > 0).float()  # Shape: (num_points, num_pixels)
+
+    # Count labeled voxels per ray
+    count_labeled = is_labeled.sum(dim=0)  # Shape: (num_pixels,)
+
+    # Apply threshold and scale to 0 or 255
+    I = (count_labeled >= threshold).float() * 255
+
+    return I.cpu().numpy().astype(np.uint8)
+
+
+def getLabel(x_tube, y_tube, z_tube, IPEL, OID, resolution, tileSize, couchAngle, iso_x, iso_y, iso_z, sliceThickness,
+             save_name, Geoinfo_save_path, threshold):
+    """
+    Generates a label image corresponding to a DRR using GPU-accelerated ray tracing.
+
+    Parameters:
+    - x_tube, y_tube, z_tube: X-ray source coordinates
+    - IPEL: Imaging plane side length (mm)
+    - OID: Object-to-imaging distance (mm)
+    - resolution: Image resolution
+    - tileSize: Size of processing tiles
+    - couchAngle: Couch rotation angle (degrees)
+    - iso_x, iso_y, iso_z: Isocenter coordinates
+    - sliceThickness: CT slice thickness (mm)
+    - save_name: Base name for saved file
+    - Geoinfo_save_path: Directory for saving output
+    - threshold: Threshold for labeled voxel count
+
+    Returns:
+    - DRR_flipped: 2D numpy array of the label image
+    """
     # CT information
     Data3D = get_var("labeldata")
     pixelSpacing = get_var("PixelSpacing")
 
-    # Compute the new X-ray source coordinates after rotating the imaging system
-    [x_rotated, y_rotated, z_rotated] = rotate_around_z(x_tube, y_tube, z_tube, couchAngle)
-    transferMatrix, translationVector = calculate_rotation_matrix_deltaD(x_rotated, y_rotated, z_rotated, OID)
-    SID = OID + (x_rotated ** 2 + y_rotated ** 2 + z_rotated ** 2) ** 0.5
+    # Convert Data3D to torch tensor and move to GPU
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Prepare CT global coordinates
-    CTShape = np.array(Data3D.shape)
+    if isinstance(couchAngle, float):
+        couchAngle = np.array([couchAngle])
 
-    # Initialize DRR as a 2D array
-    DRR = np.zeros((resolution, resolution))
+    for angle in couchAngle:
+        # Rotate X-ray source coordinates
+        [x_rotated, y_rotated, z_rotated] = rotate_around_z(x_tube, y_tube, z_tube, angle)
+        transferMatrix, translationVector = calculate_rotation_matrix_deltaD(x_rotated, y_rotated, z_rotated, OID)
+        SID = OID + (x_rotated ** 2 + y_rotated ** 2 + z_rotated ** 2) ** 0.5
 
-    # Physical distance between imaging plane pixels
-    pixelDistance = IPEL / resolution
-    sectionNum = int(resolution / tileSize)
+        # Prepare CT coordinates
+        CTShape = np.array(Data3D.shape)
 
-    x_max = CTShape[0]
-    y_max = CTShape[2]
-    z_max = CTShape[1]
-    # Block-wise calculation
-    for X in range(1, sectionNum + 1):
-        for Y in range(1, sectionNum + 1):
-            # Get imaging points for the current block
-            imagingPoints = get_imaging_points(X, Y, pixelDistance, resolution, tileSize)
+        # Initialize label image
+        DRR = np.zeros((resolution, resolution), dtype=np.uint8)
 
-            # Compute voxel paths and intensities
-            voxels_on_lines = get_voxels_on_X_ray_lines(CTShape, pixelSpacing, sliceThickness,
-                                                        [x_rotated, y_rotated, z_rotated], imagingPoints,
-                                                        [iso_x, iso_y, iso_z], OID, SID)
+        # Pixel distance on imaging plane
+        pixelDistance = IPEL / resolution
+        sectionNum = int(resolution / tileSize)
 
-            # Apply global-to-CT coordinate transformation
-            voxels_on_lines_global = transform_voxels_to_global(voxels_on_lines, transferMatrix, translationVector)
+        # Block-wise processing
+        for X in range(1, sectionNum + 1):
+            for Y in range(1, sectionNum + 1):
+                # Get imaging points
+                imagingPoints = get_imaging_points(X, Y, pixelDistance, resolution, tileSize)
 
-            # Translation to CT coordinate system
-            translation = np.array(
-                [(iso_x - 1) * pixelSpacing[1], (iso_z - 1) * sliceThickness,
-                 (CTShape[0] - iso_y - 1) * pixelSpacing[1]]
-            ).reshape(3, 1, 1)
-            voxels_on_lines_ct = voxels_on_lines_global + translation
+                # Compute voxel paths
+                voxels_on_lines = get_voxels_on_X_ray_lines(CTShape, pixelSpacing, sliceThickness,
+                                                            [x_rotated, y_rotated, z_rotated], imagingPoints,
+                                                            [iso_x, iso_y, iso_z], OID, SID)
 
-            # Discretize the coordinates to CT grid
-            voxels_on_lines_ct[0, :, :] = np.round(voxels_on_lines_ct[0, :, :] / pixelSpacing[0])
-            voxels_on_lines_ct[1, :, :] = np.round(voxels_on_lines_ct[1, :, :] / sliceThickness)
-            voxels_on_lines_ct[2, :, :] = np.round(voxels_on_lines_ct[2, :, :] / pixelSpacing[1])
+                # Transform to global and then CT coordinates
+                voxels_on_lines_global = transform_voxels_to_global(voxels_on_lines, transferMatrix, translationVector)
+                translation = np.array([(iso_x - 1) * pixelSpacing[1],
+                                        (iso_z - 1) * sliceThickness,
+                                        (CTShape[0] - iso_y - 1) * pixelSpacing[1]]).reshape(3, 1, 1)
+                voxels_on_lines_ct = voxels_on_lines_global + translation
 
-            # Initialize the output as a 3D list
-            num_pixels = voxels_on_lines_ct.shape[2]
-            voxels_on_lines_ct_list = [[] for _ in range(num_pixels)]  # Create a list for each pixel
+                # Convert to torch tensor and move to GPU
+                voxels_on_lines_ct_tensor = torch.from_numpy(voxels_on_lines_ct).float().to(device)
 
-            # Process each pixel separately
-            for pixel_idx in range(num_pixels):
-                # Extract the voxel path for this pixel
-                voxel_path = voxels_on_lines_ct[:, :, pixel_idx].T  # Shape: (num_voxels, 3)
+                I = calculate_Label_gpu(voxels_on_lines_ct_tensor, Data3D, CTShape, threshold, pixelSpacing, sliceThickness)
 
-                # Remove points outside the valid range
-                valid_mask = (
-                        (voxel_path[:, 0] >= 0) & (voxel_path[:, 0] <= x_max - 1) &
-                        (voxel_path[:, 1] >= 0) & (voxel_path[:, 1] <= y_max - 1) &  # 注意：z 对应 CTShape 的第 2 轴
-                        (voxel_path[:, 2] >= 0) & (voxel_path[:, 2] <= z_max - 1)
-                )
-                voxel_path = voxel_path[valid_mask]  # 保留有效点
+                # Reshape I1 into a tile of size (tileSize, tileSize)
+                I1_tile = I.reshape((tileSize, tileSize), order='F')
 
-                # Convert to a list and store it
-                voxels_on_lines_ct_list[pixel_idx] = voxel_path.tolist()
+                # Fill the corresponding block in the DRR
+                x_start = (X - 1) * tileSize
+                x_end = X * tileSize
+                y_start = (Y - 1) * tileSize
+                y_end = Y * tileSize
+                DRR[y_start:y_end, x_start:x_end] = I1_tile
 
-            I = calculate_Label(voxels_on_lines_ct_list, num_pixels, Data3D, CTShape, threshold)
-
-            # Reshape I1 into a tile of size (tileSize, tileSize)
-            I1_tile = I.reshape((tileSize, tileSize), order='F')
-
-            # Fill the corresponding block in the DRR
-            x_start = (X - 1) * tileSize
-            x_end = X * tileSize
-            y_start = (Y - 1) * tileSize
-            y_end = Y * tileSize
-            DRR[y_start:y_end, x_start:x_end] = I1_tile
-
-    # Save DRR as an image
-    # 归一化
-    DRR_normalized = DRR.astype(np.uint8)
-    DRR_flipped = cv2.flip(DRR_normalized, 0)
-    imageName = f"{Geoinfo_save_path}/saved DRR/Label_Threshold_{threshold}_{resolution}x{resolution}_CouchAngle{couchAngle}_iso_{iso_x}_{iso_y}_{iso_z}_{save_name}.png"
-    plt.imsave(imageName, DRR_flipped, cmap='gray')
+        # Save DRR as an image
+        # 归一化
+        DRR_normalized = DRR.astype(np.uint8)
+        DRR_flipped = cv2.flip(DRR_normalized, 0)
+        imageName = f"{Geoinfo_save_path}/saved DRR/Label_Threshold_{threshold}_{resolution}x{resolution}_CouchAngle{angle}_iso_{iso_x}_{iso_y}_{iso_z}_{save_name}.png"
+        plt.imsave(imageName, DRR_flipped, cmap='gray')
     return DRR_flipped
