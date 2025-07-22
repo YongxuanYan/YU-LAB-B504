@@ -192,123 +192,214 @@ def calculate_I1_gpu(voxels_on_lines_ct, CTData, pixelSpacing, sliceThickness, m
     return I1.cpu().numpy()
 
 
-def calculate_bone_only_I1(traversedVoxels_ct, num_pixels, CTData, CTShape, muWater, muAir, bone_threshold):
-    I0 = 1200
-    I1 = np.ones(num_pixels) * I0  # Start with initial intensity for each pixel
-    for pixel_idx in range(num_pixels):
-        # Extract the ray path for the current pixel (3 x num_voxels -> num_voxels x 3)
-        voxelPath = np.array(traversedVoxels_ct[pixel_idx])  # Shape: (num_voxels_per_ray, 3)
-        if voxelPath.size == 0:
-            continue
-        m = 0
-        CTValue = []  # 用于存储与 CT 数据相交的体素值
-        for point in voxelPath:
-            # 获取 CT 值，注意索引需要取整
-            if CTData[CTShape[1] - int(point[2]) - 1, int(point[0]) - 1, int(point[1]) - 1] >= bone_threshold:
-                value = CTData[int(CTShape[1] - point[2]) - 1, int(point[0]) - 1, int(point[1]) - 1]
-                CTValue.append(value)
-                m += 1
-
-        # 如果有多个相交体素
-        if m >= 1:
-            # 计算 CT 衰减
-            CTValue = np.array(CTValue)
-            attenuation = np.average(CTValue * (muWater - muAir) / 1000 + muWater)
-            I1[pixel_idx] = I0 * np.exp(-attenuation)
-    return I1
-
-
-def calculate_bone_suppressed_I1_constant(traversedVoxels_ct, num_pixels, CTData, CTShape, muWater, muAir,
-                                          bone_threshold, constant):
+def calculate_bone_only_I1_gpu(voxels_on_lines_ct, CTData, pixelSpacing, sliceThickness, muWater, muAir,
+                               bone_threshold):
     """
-    Calculate the X-ray intensity (I1) at the imaging plane using ray attenuation for CT and air.
+    GPU-accelerated version of bone-only X-ray intensity calculation.
 
     Parameters:
-    traversedVoxels_ct: 3 x num_voxels x num_drr_pixels numpy array of global coordinates for X-ray traversed voxels.
-    CTGlobalCoords: N x 4 numpy array where the first three columns are (x, y, z) coordinates, and the 4th column is the CT value.
-    pixelSpacing: List or numpy array of pixel spacing in x and y directions [dx, dy].
-    sliceThickness: Thickness of each CT slice in mm.
-    SID: Source-to-imaging distance (mm).
-    I0: Initial X-ray intensity at the source.
-    muWater: X-ray attenuation coefficient for water.
-    muAir: X-ray attenuation coefficient for air.
-    ct_min: Minimum CT value in the dataset (for normalization to HU range).
-    ct_max: Maximum CT value in the dataset (for normalization to HU range).
+    - voxels_on_lines_ct: 3D numpy array (3, num_points, num_pixels)
+    - CTData: CT voxel data (numpy array)
+    - pixelSpacing: List or numpy array of pixel spacing in x and y directions [dx, dy]
+    - sliceThickness: Thickness of each CT slice in mm
+    - muWater: X-ray attenuation coefficient for water
+    - muAir: X-ray attenuation coefficient for air
+    - bone_threshold: Threshold for bone detection in CT values
 
     Returns:
-    I1: 1D numpy array of length num_drr_pixels representing the X-ray intensity at the imaging plane for each pixel.
+    - I1: 1D numpy array of length num_pixels representing X-ray intensity
     """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     I0 = 1200
-    I1 = np.ones(num_pixels) * I0  # Start with initial intensity for each pixel
-    for pixel_idx in range(num_pixels):
-        # Extract the ray path for the current pixel (3 x num_voxels -> num_voxels x 3)
-        voxelPath = np.array(traversedVoxels_ct[pixel_idx])  # Shape: (num_voxels_per_ray, 3)
-        if voxelPath.size == 0:
-            I1[pixel_idx] = I0 * np.exp(-muAir)
-            continue
-        m = 0
-        CTValue = []  # 用于存储与 CT 数据相交的体素值
-        for point in voxelPath:
-            # 获取 CT 值，注意索引需要取整
-            value = CTData[int(CTShape[1] - point[2]) - 1, int(point[0]) - 1, int(point[1]) - 1] if CTData[CTShape[
-                                                                                                               1] - int(
-                point[2]) - 1, int(point[0]) - 1, int(point[1]) - 1] <= bone_threshold else constant
-            CTValue.append(value)
-            m += 1
-        # 如果有多个相交体素
-        if m >= 1:
-            # 计算 CT 衰减
-            CTValue = np.array(CTValue)
-            attenuation = np.average(CTValue * (muWater - muAir) / 1000 + muWater)
-            I1[pixel_idx] = I0 * np.exp(-attenuation)
 
-    return I1
+    # Convert data to PyTorch tensors and move to GPU
+    voxels_tensor = torch.from_numpy(voxels_on_lines_ct).float().to(device)
+    CT_tensor = torch.from_numpy(CTData.astype(np.float32)).to(device)
+
+    # Get CT data shape
+    CTShape = CTData.shape
+
+    # Compute CT indices (vectorized)
+    z_idx = (CTShape[1] - 1 - (voxels_tensor[2] / pixelSpacing[1]).round().long()).clamp(0, CTShape[1] - 1)
+    x_idx = ((voxels_tensor[0] / pixelSpacing[0]).round().long() - 1).clamp(0, CTShape[0] - 1)
+    y_idx = ((voxels_tensor[1] / sliceThickness).round().long() - 1).clamp(0, CTShape[2] - 1)
+
+    # Create valid mask for indices within CT bounds
+    valid_mask = (
+            (x_idx >= 0) & (x_idx < CTShape[0]) &
+            (y_idx >= 0) & (y_idx < CTShape[2]) &
+            (z_idx >= 0) & (z_idx < CTShape[1])
+    )
+
+    # Initialize CT values tensor
+    ct_vals = torch.zeros_like(x_idx, dtype=torch.float32)
+
+    # Fetch CT values for valid indices
+    valid_indices = valid_mask.nonzero(as_tuple=True)
+    if len(valid_indices[0]) > 0:
+        ct_vals[valid_indices] = CT_tensor[z_idx[valid_indices], x_idx[valid_indices], y_idx[valid_indices]]
+
+    # Apply bone threshold mask (only consider values >= bone_threshold)
+    bone_mask = ct_vals >= bone_threshold
+    valid_bone_mask = valid_mask & bone_mask
+
+    # Compute sum of CT values for bone voxels only
+    sum_ct = torch.where(bone_mask, ct_vals, torch.zeros_like(ct_vals)).sum(dim=0)  # Shape: (num_pixels,)
+    count_valid = valid_bone_mask.sum(dim=0).float()  # Shape: (num_pixels,)
+
+    # Compute average CT value for bone voxels (avoid division by zero)
+    avg_ct = torch.where(count_valid > 0, sum_ct / count_valid, torch.zeros_like(sum_ct))
+
+    # Compute attenuation for bone voxels
+    attenuation = avg_ct * (muWater - muAir) / 1000.0 + muWater
+
+    # Compute final intensity
+    I1 = I0 * torch.exp(-attenuation)
+
+    # Set intensity to I0 for pixels with no valid bone voxels
+    I1 = torch.where(count_valid == 0, torch.tensor(I0, dtype=torch.float32, device=device), I1)
+
+    return I1.cpu().numpy()
 
 
-def calculate_bone_enhanced_I1(traversedVoxels_ct, num_pixels, CTData, CTShape, muWater, muAir,
-                                          bone_threshold, enhance_factor):
+def calculate_bone_suppressed_I1_constant_gpu(voxels_on_lines_ct, CTData, pixelSpacing, sliceThickness, muWater, muAir,
+                                              bone_threshold, constant):
     """
-    Calculate the X-ray intensity (I1) at the imaging plane using ray attenuation for CT and air.
+    GPU-accelerated version of bone-suppressed X-ray intensity calculation with constant substitution.
 
     Parameters:
-    traversedVoxels_ct: 3 x num_voxels x num_drr_pixels numpy array of global coordinates for X-ray traversed voxels.
-    CTGlobalCoords: N x 4 numpy array where the first three columns are (x, y, z) coordinates, and the 4th column is the CT value.
-    pixelSpacing: List or numpy array of pixel spacing in x and y directions [dx, dy].
-    sliceThickness: Thickness of each CT slice in mm.
-    SID: Source-to-imaging distance (mm).
-    I0: Initial X-ray intensity at the source.
-    muWater: X-ray attenuation coefficient for water.
-    muAir: X-ray attenuation coefficient for air.
-    ct_min: Minimum CT value in the dataset (for normalization to HU range).
-    ct_max: Maximum CT value in the dataset (for normalization to HU range).
+    - voxels_on_lines_ct: 3D numpy array (3, num_points, num_pixels)
+    - CTData: CT voxel data (numpy array)
+    - pixelSpacing: List or numpy array of pixel spacing in x and y directions [dx, dy]
+    - sliceThickness: Thickness of each CT slice in mm
+    - muWater: X-ray attenuation coefficient for water
+    - muAir: X-ray attenuation coefficient for air
+    - bone_threshold: Threshold for bone detection in CT values
+    - constant: Constant value to substitute for bone voxels
 
     Returns:
-    I1: 1D numpy array of length num_drr_pixels representing the X-ray intensity at the imaging plane for each pixel.
+    - I1: 1D numpy array of length num_pixels representing X-ray intensity
     """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     I0 = 1200
-    I1 = np.ones(num_pixels) * I0  # Start with initial intensity for each pixel
-    for pixel_idx in range(num_pixels):
-        # Extract the ray path for the current pixel (3 x num_voxels -> num_voxels x 3)
-        voxelPath = np.array(traversedVoxels_ct[pixel_idx])  # Shape: (num_voxels_per_ray, 3)
-        if voxelPath.size == 0:
-            I1[pixel_idx] = I0 * np.exp(-muAir)
-            continue
-        m = 0
-        CTValue = []  # 用于存储与 CT 数据相交的体素值
-        for point in voxelPath:
-            # 获取 CT 值，注意索引需要取整
-            value = CTData[int(CTShape[1] - point[2]) - 1, int(point[0]) - 1, int(point[1]) - 1] \
-                if CTData[CTShape[1] - int(point[2]) - 1, int(point[0]) - 1, int(point[1]) - 1] <= bone_threshold \
-                else enhance_factor * CTData[int(CTShape[1] - point[2]) - 1, int(point[0]) - 1, int(point[1]) - 1]
-            CTValue.append(value)
-            m += 1
-        # 如果有多个相交体素
-        if m >= 1:
-            # 计算 CT 衰减
-            CTValue = np.array(CTValue)
-            attenuation = np.average(CTValue * (muWater - muAir) / 1000 + muWater)
-            I1[pixel_idx] = I0 * np.exp(-attenuation)
-    return I1
+
+    # Convert data to PyTorch tensors and move to GPU
+    voxels_tensor = torch.from_numpy(voxels_on_lines_ct).float().to(device)
+    CT_tensor = torch.from_numpy(CTData.astype(np.float32)).to(device)
+
+    # Get CT data shape
+    CTShape = CTData.shape
+
+    # Compute CT indices (vectorized)
+    z_idx = (CTShape[1] - 1 - (voxels_tensor[2] / pixelSpacing[1]).round().long()).clamp(0, CTShape[1] - 1)
+    x_idx = ((voxels_tensor[0] / pixelSpacing[0]).round().long() - 1).clamp(0, CTShape[0] - 1)
+    y_idx = ((voxels_tensor[1] / sliceThickness).round().long() - 1).clamp(0, CTShape[2] - 1)
+
+    # Create valid mask for indices within CT bounds
+    valid_mask = (
+            (x_idx >= 0) & (x_idx < CTShape[0]) &
+            (y_idx >= 0) & (y_idx < CTShape[2]) &
+            (z_idx >= 0) & (z_idx < CTShape[1])
+    )
+
+    # Initialize CT values tensor
+    ct_vals = torch.zeros_like(x_idx, dtype=torch.float32)
+
+    # Fetch CT values for valid indices
+    valid_indices = valid_mask.nonzero(as_tuple=True)
+    if len(valid_indices[0]) > 0:
+        ct_vals[valid_indices] = CT_tensor[z_idx[valid_indices], x_idx[valid_indices], y_idx[valid_indices]]
+
+    # Apply bone suppression: replace bone voxels (CT >= bone_threshold) with constant
+    ct_vals = torch.where(ct_vals > bone_threshold, torch.tensor(constant, dtype=torch.float32, device=device), ct_vals)
+
+    # Compute sum of CT values
+    sum_ct = ct_vals.sum(dim=0)  # Shape: (num_pixels,)
+    count_valid = valid_mask.sum(dim=0).float()  # Shape: (num_pixels,)
+
+    # Compute average CT value (avoid division by zero)
+    avg_ct = torch.where(count_valid > 0, sum_ct / count_valid, torch.zeros_like(sum_ct))
+
+    # Compute attenuation
+    attenuation = avg_ct * (muWater - muAir) / 1000.0 + muWater
+
+    # Compute final intensity
+    I1 = I0 * torch.exp(-attenuation)
+
+    # Set intensity to I0 * exp(-muAir) for pixels with no valid voxels
+    I1 = torch.where(count_valid == 0, torch.tensor(I0 * np.exp(-muAir), dtype=torch.float32, device=device), I1)
+
+    return I1.cpu().numpy()
+
+
+def calculate_bone_enhanced_I1_gpu(voxels_on_lines_ct, CTData, pixelSpacing, sliceThickness, muWater, muAir,
+                                   bone_threshold, enhance_factor):
+    """
+    GPU-accelerated version of bone-enhanced X-ray intensity calculation.
+
+    Parameters:
+    - voxels_on_lines_ct: 3D numpy array (3, num_points, num_pixels)
+    - CTData: CT voxel data (numpy array)
+    - pixelSpacing: List or numpy array of pixel spacing in x and y directions [dx, dy]
+    - sliceThickness: Thickness of each CT slice in mm
+    - muWater: X-ray attenuation coefficient for water
+    - muAir: X-ray attenuation coefficient for air
+    - bone_threshold: Threshold for bone detection in CT values
+    - enhance_factor: Factor to enhance bone voxel values
+
+    Returns:
+    - I1: 1D numpy array of length num_pixels representing X-ray intensity
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    I0 = 1200
+
+    # Convert data to PyTorch tensors and move to GPU
+    voxels_tensor = torch.from_numpy(voxels_on_lines_ct).float().to(device)
+    CT_tensor = torch.from_numpy(CTData.astype(np.float32)).to(device)
+
+    # Get CT data shape
+    CTShape = CTData.shape
+
+    # Compute CT indices (vectorized)
+    z_idx = (CTShape[1] - 1 - (voxels_tensor[2] / pixelSpacing[1]).round().long()).clamp(0, CTShape[1] - 1)
+    x_idx = ((voxels_tensor[0] / pixelSpacing[0]).round().long() - 1).clamp(0, CTShape[0] - 1)
+    y_idx = ((voxels_tensor[1] / sliceThickness).round().long() - 1).clamp(0, CTShape[2] - 1)
+
+    # Create valid mask for indices within CT bounds
+    valid_mask = (
+            (x_idx >= 0) & (x_idx < CTShape[0]) &
+            (y_idx >= 0) & (y_idx < CTShape[2]) &
+            (z_idx >= 0) & (z_idx < CTShape[1])
+    )
+
+    # Initialize CT values tensor
+    ct_vals = torch.zeros_like(x_idx, dtype=torch.float32)
+
+    # Fetch CT values for valid indices
+    valid_indices = valid_mask.nonzero(as_tuple=True)
+    if len(valid_indices[0]) > 0:
+        ct_vals[valid_indices] = CT_tensor[z_idx[valid_indices], x_idx[valid_indices], y_idx[valid_indices]]
+
+    # Apply bone enhancement: multiply bone voxels (CT >= bone_threshold) by enhance_factor
+    ct_vals = torch.where(ct_vals > bone_threshold, ct_vals * enhance_factor, ct_vals)
+
+    # Compute sum of CT values
+    sum_ct = ct_vals.sum(dim=0)  # Shape: (num_pixels,)
+    count_valid = valid_mask.sum(dim=0).float()  # Shape: (num_pixels,)
+
+    # Compute average CT value (avoid division by zero)
+    avg_ct = torch.where(count_valid > 0, sum_ct / count_valid, torch.zeros_like(sum_ct))
+
+    # Compute attenuation
+    attenuation = avg_ct * (muWater - muAir) / 1000.0 + muWater
+
+    # Compute final intensity
+    I1 = I0 * torch.exp(-attenuation)
+
+    # Set intensity to I0 * exp(-muAir) for pixels with no valid voxels
+    I1 = torch.where(count_valid == 0, torch.tensor(I0 * np.exp(-muAir), dtype=torch.float32, device=device), I1)
+
+    return I1.cpu().numpy()
 
 
 def compute_ct_space_range(CTShape, pixelSpacing, sliceThickness, x0, y0, z0, x_rotated, y_rotated, z_rotated, OID):
@@ -449,27 +540,34 @@ def getDRR(x_tube, y_tube, z_tube, IPEL, OID, resolution, tileSize, couchAngle, 
 def get_bone_only_DRR(x_tube, y_tube, z_tube, IPEL, OID, resolution, tileSize, couchAngle, iso_x, iso_y, iso_z,
                       sliceThickness, save_name, Geoinfo_save_path, bone_threshold, muWater, muAir, bitDepth):
     """
-    Generates a Digitally Reconstructed Radiograph (DRR) using ray tracing algorithm.
+    Generates a bone-only Digitally Reconstructed Radiograph (DRR) using GPU-accelerated ray tracing algorithm.
 
     Parameters:
-        iso_x, iso_y, iso_z: Coordinates of the beam center in CT coordinate system (mm).
-        IPEL: Side length of the imaging area (mm).
-        couchAngle: Couch rotation angle (degrees) 从全局坐标系Z轴往下看顺时针为正.
-        resolution: Resolution of the imaging area.
-        sliceThickness: Thickness of CT slices (mm).
-        tileSize: Size of image blocks for memory optimization.
-        transferMatrix, translationVector: Coordinate transformation matrix and vector.
-        OID: Object-to-imaging plane distance (mm).
-        x, y, z: Position of the virtual X-ray source in global coordinates.
+    - x_tube, y_tube, z_tube: X-ray source coordinates
+    - IPEL: Side length of the imaging area (mm)
+    - OID: Object-to-imaging plane distance (mm)
+    - resolution: Resolution of the imaging area
+    - tileSize: Size of image blocks for memory optimization
+    - couchAngle: Couch rotation angle (degrees)
+    - iso_x, iso_y, iso_z: Isocenter coordinates in CT coordinate system (mm)
+    - sliceThickness: Thickness of CT slices (mm)
+    - save_name: Base name for saved file
+    - Geoinfo_save_path: Directory for saving output
+    - bone_threshold: Threshold for bone detection in CT values
+    - muWater: X-ray attenuation coefficient for water
+    - muAir: X-ray attenuation coefficient for air
+    - bitDepth: Bit depth for image normalization
+
     Returns:
-        DRR: 2D numpy array representing the DRR image.
+    - DRR_normalized: 2D numpy array representing the bone-only DRR image
     """
-    I0 = 1200
     # CT information
     CTData = get_var("PixelsGrid")
     pixelSpacing = get_var("PixelSpacing")
+
     if isinstance(couchAngle, float):
         couchAngle = np.array([couchAngle])
+
     for angle in couchAngle:
         # Compute the new X-ray source coordinates after rotating the imaging system
         [x_rotated, y_rotated, z_rotated] = rotate_around_z(x_tube, y_tube, z_tube, angle)
@@ -486,19 +584,17 @@ def get_bone_only_DRR(x_tube, y_tube, z_tube, IPEL, OID, resolution, tileSize, c
         pixelDistance = IPEL / resolution
         sectionNum = int(resolution / tileSize)
 
-        x_max = CTShape[0]
-        y_max = CTShape[2]
-        z_max = CTShape[1]
         # Block-wise calculation
         for X in range(1, sectionNum + 1):
             for Y in range(1, sectionNum + 1):
                 # Get imaging points for the current block
                 imagingPoints = get_imaging_points(X, Y, pixelDistance, resolution, tileSize)
 
-                # Compute voxel paths and intensities
+                # Compute voxel paths
                 voxels_on_lines = get_voxels_on_X_ray_lines(CTShape, pixelSpacing, sliceThickness,
                                                             [x_rotated, y_rotated, z_rotated], imagingPoints,
                                                             [iso_x, iso_y, iso_z], OID, SID)
+
                 # Apply global-to-CT coordinate transformation
                 voxels_on_lines_global = transform_voxels_to_global(voxels_on_lines, transferMatrix, translationVector)
 
@@ -509,33 +605,16 @@ def get_bone_only_DRR(x_tube, y_tube, z_tube, IPEL, OID, resolution, tileSize, c
                 ).reshape(3, 1, 1)
                 voxels_on_lines_ct = voxels_on_lines_global + translation
 
-                # Discretize the coordinates to CT grid
-                voxels_on_lines_ct[0, :, :] = np.round(voxels_on_lines_ct[0, :, :] / pixelSpacing[0])
-                voxels_on_lines_ct[1, :, :] = np.round(voxels_on_lines_ct[1, :, :] / sliceThickness)
-                voxels_on_lines_ct[2, :, :] = np.round(voxels_on_lines_ct[2, :, :] / pixelSpacing[1])
-
-                # Initialize the output as a 3D list
-                num_pixels = voxels_on_lines_ct.shape[2]
-                voxels_on_lines_ct_list = [[] for _ in range(num_pixels)]  # Create a list for each pixel
-
-                # Process each pixel separately
-                for pixel_idx in range(num_pixels):
-                    # Extract the voxel path for this pixel
-                    voxel_path = voxels_on_lines_ct[:, :, pixel_idx].T  # Shape: (num_voxels, 3)
-
-                    # Remove points outside the valid range
-                    valid_mask = (
-                            (voxel_path[:, 0] >= 0) & (voxel_path[:, 0] <= x_max - 1) &
-                            (voxel_path[:, 1] >= 0) & (voxel_path[:, 1] <= y_max - 1) &  # 注意：z 对应 CTShape 的第 2 轴
-                            (voxel_path[:, 2] >= 0) & (voxel_path[:, 2] <= z_max - 1)
-                    )
-                    voxel_path = voxel_path[valid_mask]  # 保留有效点
-
-                    # Convert to a list and store it
-                    voxels_on_lines_ct_list[pixel_idx] = voxel_path.tolist()
-
-                I1 = calculate_bone_only_I1(voxels_on_lines_ct_list, num_pixels, CTData, CTShape, muWater, muAir,
-                                            bone_threshold)
+                # Compute intensities using GPU
+                I1 = calculate_bone_only_I1_gpu(
+                    voxels_on_lines_ct,
+                    CTData,
+                    pixelSpacing,
+                    sliceThickness,
+                    muWater,
+                    muAir,
+                    bone_threshold
+                )
 
                 # Reshape I1 into a tile of size (tileSize, tileSize)
                 I1_tile = I1.reshape((tileSize, tileSize), order='F')
@@ -561,27 +640,35 @@ def get_bone_suppressed_DRR_constant(x_tube, y_tube, z_tube, IPEL, OID, resoluti
                                      iso_z, sliceThickness, save_name, Geoinfo_save_path, bone_threshold, muWater,
                                      muAir, bitDepth, constant):
     """
-    Generates a Digitally Reconstructed Radiograph (DRR) using ray tracing algorithm.
+    Generates a bone-suppressed Digitally Reconstructed Radiograph (DRR) using GPU-accelerated ray tracing algorithm.
 
     Parameters:
-        iso_x, iso_y, iso_z: Coordinates of the beam center in CT coordinate system (mm).
-        IPEL: Side length of the imaging area (mm).
-        couchAngle: Couch rotation angle (degrees) 从全局坐标系Z轴往下看顺时针为正.
-        resolution: Resolution of the imaging area.
-        sliceThickness: Thickness of CT slices (mm).
-        tileSize: Size of image blocks for memory optimization.
-        transferMatrix, translationVector: Coordinate transformation matrix and vector.
-        OID: Object-to-imaging plane distance (mm).
-        x, y, z: Position of the virtual X-ray source in global coordinates.
+    - x_tube, y_tube, z_tube: X-ray source coordinates
+    - IPEL: Side length of the imaging area (mm)
+    - OID: Object-to-imaging plane distance (mm)
+    - resolution: Resolution of the imaging area
+    - tileSize: Size of image blocks for memory optimization
+    - couchAngle: Couch rotation angle (degrees)
+    - iso_x, iso_y, iso_z: Isocenter coordinates in CT coordinate system (mm)
+    - sliceThickness: Thickness of CT slices (mm)
+    - save_name: Base name for saved file
+    - Geoinfo_save_path: Directory for saving output
+    - bone_threshold: Threshold for bone detection in CT values
+    - muWater: X-ray attenuation coefficient for water
+    - muAir: X-ray attenuation coefficient for air
+    - bitDepth: Bit depth for image normalization
+    - constant: Constant value to substitute for bone voxels
+
     Returns:
-        DRR: 2D numpy array representing the DRR image.
+    - DRR_normalized: 2D numpy array representing the bone-suppressed DRR image
     """
-    I0 = 1200
     # CT information
     CTData = get_var("PixelsGrid")
     pixelSpacing = get_var("PixelSpacing")
+
     if isinstance(couchAngle, float):
         couchAngle = np.array([couchAngle])
+
     for angle in couchAngle:
         # Compute the new X-ray source coordinates after rotating the imaging system
         [x_rotated, y_rotated, z_rotated] = rotate_around_z(x_tube, y_tube, z_tube, angle)
@@ -598,20 +685,17 @@ def get_bone_suppressed_DRR_constant(x_tube, y_tube, z_tube, IPEL, OID, resoluti
         pixelDistance = IPEL / resolution
         sectionNum = int(resolution / tileSize)
 
-        x_max = CTShape[0]
-        y_max = CTShape[2]
-        z_max = CTShape[1]
-
         # Block-wise calculation
         for X in range(1, sectionNum + 1):
             for Y in range(1, sectionNum + 1):
                 # Get imaging points for the current block
                 imagingPoints = get_imaging_points(X, Y, pixelDistance, resolution, tileSize)
 
-                # Compute voxel paths and intensities
+                # Compute voxel paths
                 voxels_on_lines = get_voxels_on_X_ray_lines(CTShape, pixelSpacing, sliceThickness,
                                                             [x_rotated, y_rotated, z_rotated], imagingPoints,
                                                             [iso_x, iso_y, iso_z], OID, SID)
+
                 # Apply global-to-CT coordinate transformation
                 voxels_on_lines_global = transform_voxels_to_global(voxels_on_lines, transferMatrix, translationVector)
 
@@ -622,33 +706,21 @@ def get_bone_suppressed_DRR_constant(x_tube, y_tube, z_tube, IPEL, OID, resoluti
                 ).reshape(3, 1, 1)
                 voxels_on_lines_ct = voxels_on_lines_global + translation
 
-                # Discretize the coordinates to CT grid
-                voxels_on_lines_ct[0, :, :] = np.round(voxels_on_lines_ct[0, :, :] / pixelSpacing[0])
-                voxels_on_lines_ct[1, :, :] = np.round(voxels_on_lines_ct[1, :, :] / sliceThickness)
-                voxels_on_lines_ct[2, :, :] = np.round(voxels_on_lines_ct[2, :, :] / pixelSpacing[1])
+                # Ensure voxels_on_lines_ct is a NumPy array
+                voxels_on_lines_ct = np.array(voxels_on_lines_ct) if not isinstance(voxels_on_lines_ct,
+                                                                                    np.ndarray) else voxels_on_lines_ct
 
-                # Initialize the output as a 3D list
-                num_pixels = voxels_on_lines_ct.shape[2]
-                voxels_on_lines_ct_list = [[] for _ in range(num_pixels)]  # Create a list for each pixel
-
-                # Process each pixel separately
-                for pixel_idx in range(num_pixels):
-                    # Extract the voxel path for this pixel
-                    voxel_path = voxels_on_lines_ct[:, :, pixel_idx].T  # Shape: (num_voxels, 3)
-
-                    # Remove points outside the valid range
-                    valid_mask = (
-                            (voxel_path[:, 0] >= 0) & (voxel_path[:, 0] <= x_max - 1) &
-                            (voxel_path[:, 1] >= 0) & (voxel_path[:, 1] <= y_max - 1) &  # 注意：z 对应 CTShape 的第 2 轴
-                            (voxel_path[:, 2] >= 0) & (voxel_path[:, 2] <= z_max - 1)
-                    )
-                    voxel_path = voxel_path[valid_mask]  # 保留有效点
-
-                    # Convert to a list and store it
-                    voxels_on_lines_ct_list[pixel_idx] = voxel_path.tolist()
-
-                I1 = calculate_bone_suppressed_I1_constant(voxels_on_lines_ct_list, num_pixels, CTData, CTShape, muWater,
-                                                           muAir, bone_threshold, constant)
+                # Compute intensities using GPU
+                I1 = calculate_bone_suppressed_I1_constant_gpu(
+                    voxels_on_lines_ct,
+                    CTData,
+                    pixelSpacing,
+                    sliceThickness,
+                    muWater,
+                    muAir,
+                    bone_threshold,
+                    constant
+                )
 
                 # Reshape I1 into a tile of size (tileSize, tileSize)
                 I1_tile = I1.reshape((tileSize, tileSize), order='F')
@@ -659,9 +731,7 @@ def get_bone_suppressed_DRR_constant(x_tube, y_tube, z_tube, IPEL, OID, resoluti
                 y_start = (Y - 1) * tileSize
                 y_end = Y * tileSize
                 DRR[y_start:y_end, x_start:x_end] = I1_tile
-
         # Save DRR as an image
-
         # 归一化
         DRR = (2 ** bitDepth) * (DRR - np.min(DRR)) / 200
         DRR_flipped = cv2.flip(DRR, 0)
@@ -672,30 +742,38 @@ def get_bone_suppressed_DRR_constant(x_tube, y_tube, z_tube, IPEL, OID, resoluti
 
 
 def get_bone_enhanced_DRR(x_tube, y_tube, z_tube, IPEL, OID, resolution, tileSize, couchAngle, iso_x, iso_y,
-                                     iso_z, sliceThickness, save_name, Geoinfo_save_path, bone_threshold, muWater,
-                                     muAir, bitDepth, enhance_factor):
+                          iso_z, sliceThickness, save_name, Geoinfo_save_path, bone_threshold, muWater, muAir, bitDepth,
+                          enhance_factor):
     """
-    Generates a Digitally Reconstructed Radiograph (DRR) using ray tracing algorithm.
+    Generates a bone-enhanced Digitally Reconstructed Radiograph (DRR) using GPU-accelerated ray tracing algorithm.
 
     Parameters:
-        iso_x, iso_y, iso_z: Coordinates of the beam center in CT coordinate system (mm).
-        IPEL: Side length of the imaging area (mm).
-        couchAngle: Couch rotation angle (degrees) 从全局坐标系Z轴往下看顺时针为正.
-        resolution: Resolution of the imaging area.
-        sliceThickness: Thickness of CT slices (mm).
-        tileSize: Size of image blocks for memory optimization.
-        transferMatrix, translationVector: Coordinate transformation matrix and vector.
-        OID: Object-to-imaging plane distance (mm).
-        x, y, z: Position of the virtual X-ray source in global coordinates.
+    - x_tube, y_tube, z_tube: X-ray source coordinates
+    - IPEL: Side length of the imaging area (mm)
+    - OID: Object-to-imaging plane distance (mm)
+    - resolution: Resolution of the imaging area
+    - tileSize: Size of image blocks for memory optimization
+    - couchAngle: Couch rotation angle (degrees)
+    - iso_x, iso_y, iso_z: Isocenter coordinates in CT coordinate system (mm)
+    - sliceThickness: Thickness of CT slices (mm)
+    - save_name: Base name for saved file
+    - Geoinfo_save_path: Directory for saving output
+    - bone_threshold: Threshold for bone detection in CT values
+    - muWater: X-ray attenuation coefficient for water
+    - muAir: X-ray attenuation coefficient for air
+    - bitDepth: Bit depth for image normalization
+    - enhance_factor: Factor to enhance bone voxel values
+
     Returns:
-        DRR: 2D numpy array representing the DRR image.
+    - DRR_normalized: 2D numpy array representing the bone-enhanced DRR image
     """
-    I0 = 1200
     # CT information
     CTData = get_var("PixelsGrid")
     pixelSpacing = get_var("PixelSpacing")
+
     if isinstance(couchAngle, float):
         couchAngle = np.array([couchAngle])
+
     for angle in couchAngle:
         # Compute the new X-ray source coordinates after rotating the imaging system
         [x_rotated, y_rotated, z_rotated] = rotate_around_z(x_tube, y_tube, z_tube, angle)
@@ -712,20 +790,17 @@ def get_bone_enhanced_DRR(x_tube, y_tube, z_tube, IPEL, OID, resolution, tileSiz
         pixelDistance = IPEL / resolution
         sectionNum = int(resolution / tileSize)
 
-        x_max = CTShape[0]
-        y_max = CTShape[2]
-        z_max = CTShape[1]
-
         # Block-wise calculation
         for X in range(1, sectionNum + 1):
             for Y in range(1, sectionNum + 1):
                 # Get imaging points for the current block
                 imagingPoints = get_imaging_points(X, Y, pixelDistance, resolution, tileSize)
 
-                # Compute voxel paths and intensities
+                # Compute voxel paths
                 voxels_on_lines = get_voxels_on_X_ray_lines(CTShape, pixelSpacing, sliceThickness,
                                                             [x_rotated, y_rotated, z_rotated], imagingPoints,
                                                             [iso_x, iso_y, iso_z], OID, SID)
+
                 # Apply global-to-CT coordinate transformation
                 voxels_on_lines_global = transform_voxels_to_global(voxels_on_lines, transferMatrix, translationVector)
 
@@ -736,33 +811,21 @@ def get_bone_enhanced_DRR(x_tube, y_tube, z_tube, IPEL, OID, resolution, tileSiz
                 ).reshape(3, 1, 1)
                 voxels_on_lines_ct = voxels_on_lines_global + translation
 
-                # Discretize the coordinates to CT grid
-                voxels_on_lines_ct[0, :, :] = np.round(voxels_on_lines_ct[0, :, :] / pixelSpacing[0])
-                voxels_on_lines_ct[1, :, :] = np.round(voxels_on_lines_ct[1, :, :] / sliceThickness)
-                voxels_on_lines_ct[2, :, :] = np.round(voxels_on_lines_ct[2, :, :] / pixelSpacing[1])
+                # Ensure voxels_on_lines_ct is a NumPy array
+                voxels_on_lines_ct = np.array(voxels_on_lines_ct) if not isinstance(voxels_on_lines_ct,
+                                                                                    np.ndarray) else voxels_on_lines_ct
 
-                # Initialize the output as a 3D list
-                num_pixels = voxels_on_lines_ct.shape[2]
-                voxels_on_lines_ct_list = [[] for _ in range(num_pixels)]  # Create a list for each pixel
-
-                # Process each pixel separately
-                for pixel_idx in range(num_pixels):
-                    # Extract the voxel path for this pixel
-                    voxel_path = voxels_on_lines_ct[:, :, pixel_idx].T  # Shape: (num_voxels, 3)
-
-                    # Remove points outside the valid range
-                    valid_mask = (
-                            (voxel_path[:, 0] >= 0) & (voxel_path[:, 0] <= x_max - 1) &
-                            (voxel_path[:, 1] >= 0) & (voxel_path[:, 1] <= y_max - 1) &  # 注意：z 对应 CTShape 的第 2 轴
-                            (voxel_path[:, 2] >= 0) & (voxel_path[:, 2] <= z_max - 1)
-                    )
-                    voxel_path = voxel_path[valid_mask]  # 保留有效点
-
-                    # Convert to a list and store it
-                    voxels_on_lines_ct_list[pixel_idx] = voxel_path.tolist()
-
-                I1 = calculate_bone_enhanced_I1(voxels_on_lines_ct_list, num_pixels, CTData, CTShape, muWater, muAir,
-                                                bone_threshold, enhance_factor)
+                # Compute intensities using GPU
+                I1 = calculate_bone_enhanced_I1_gpu(
+                    voxels_on_lines_ct,
+                    CTData,
+                    pixelSpacing,
+                    sliceThickness,
+                    muWater,
+                    muAir,
+                    bone_threshold,
+                    enhance_factor
+                )
 
                 # Reshape I1 into a tile of size (tileSize, tileSize)
                 I1_tile = I1.reshape((tileSize, tileSize), order='F')
@@ -803,25 +866,6 @@ def get_bone_suppressed_DRR_dual_energy(x_tube, y_tube, z_tube, IPEL, OID, resol
                                         iso_y, iso_z, sliceThickness, save_name, Geoinfo_save_path, muWater, muAir,
                                         bitDepth, deltaI, dictionary):
     return np.zeros(resolution, resolution)
-
-
-def calculate_Label(voxels_on_lines_ct_list, num_pixels, Data3D, CTShape, threshold):
-    I = np.zeros(num_pixels, dtype=np.uint8)  # Initialize output array with zeros
-
-    for pixel_idx in range(num_pixels):
-        voxel_path = np.array(voxels_on_lines_ct_list[pixel_idx])  # Shape: (num_voxels, 3)
-        if voxel_path.size == 0:  # Skip empty paths
-            continue
-
-        count = 0  # Count of labeled voxels
-        for point in voxel_path:
-            x, y, z = CTShape[1] - int(point[2]) - 1, int(point[0]) - 1, int(point[1]) - 1
-            if Data3D[x, y, z] > 0:  # Assuming Data3D contains positive labels for tumors
-                count += 1
-                if count >= threshold:  # Early exit if threshold is exceeded
-                    I[pixel_idx] = 255
-                    break
-    return I
 
 
 def calculate_Label_gpu(voxels_on_lines_ct, Data3D, CTShape, threshold, pixelSpacing, sliceThickness):
