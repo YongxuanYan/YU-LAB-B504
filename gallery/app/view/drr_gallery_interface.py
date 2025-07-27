@@ -619,14 +619,14 @@ class ToolBar(QWidget):
         self.drr_thread.finished.connect(self.on_drr_generation_finished)
         self.drr_thread.start()  # 启动线程
         self.sys_msg("DRR generation started in the background...")
-        self.generateDRRButton.setVisible(False)
+        self.generateDRRButton.setEnabled(False)
 
     def on_drr_generation_finished(self):
         """当 DRR 生成任务完成时调用"""
         # 显示生成完成的浮动窗口
         buttonClickWithFloatingWindow(self, 'DRR generation completed!', 'you can check DRR now', 'generate DRR', 0, self.generateDRRButton)
         update_display_drr(self.parent())
-        self.generateDRRButton.setVisible(True)
+        self.generateDRRButton.setEnabled(True)
 
     def imaging_pair1_DRR_generation(self, muWater, muAir, Geoinfo_save_path, resolution, bitDepth, tileSize,
                                      couchAngle, iso_x, iso_y, iso_z, sliceThickness, DRR_type):
