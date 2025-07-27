@@ -8,7 +8,7 @@ class AIInterface(AIGalleryInterface):
 
     def __init__(self, parent=None):
         super().__init__(parent=parent)
-        self.setMaximumSize(1024, 712)
+        self.setMaximumSize(1024, 732)
         self.setObjectName('AIInterface')
         self.left_label = ImageLabel()
         self.left_label.setFixedSize(512, 512)
